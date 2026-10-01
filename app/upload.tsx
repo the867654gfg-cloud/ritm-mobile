@@ -57,7 +57,6 @@ export default function UploadScreen() {
     let successCount = 0;
     const errors: string[] = [];
 
-    // Используем фиксированный идентификатор без вызова несуществующей сессии
     const userId = 'public-user';
 
     for (let i = 0; i < selectedFiles.length; i++) {
@@ -69,7 +68,6 @@ export default function UploadScreen() {
           throw new Error('Файл не выбран');
         }
 
-        // Очищаем имя файла для бакета
         const cleanFileName = item.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const fileExt = cleanFileName.split('.').pop() || 'mp3';
         const storagePath = `${userId}/${Date.now()}_${cleanFileName}`;
@@ -106,12 +104,13 @@ export default function UploadScreen() {
           title = parts.slice(1).join(' - ').trim();
         }
 
-        // 3. Запись метаданных трека в БД Supabase
+        // 3. Запись метаданных трека в БД Supabase с правильной колонкой audio_url
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
             title: title,
-            audio_uri: publicAudioUrl,
+            artist: artist,
+            audio_url: publicAudioUrl,
           });
 
         if (dbError) {
