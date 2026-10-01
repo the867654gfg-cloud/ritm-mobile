@@ -57,8 +57,7 @@ export default function UploadScreen() {
     let successCount = 0;
     const errors: string[] = [];
 
-    const { data: { session } } = await supabase.auth.getSession();
-    const userId = session?.user?.id || 'anonymous';
+    const userId = 'public-user';
 
     for (let i = 0; i < selectedFiles.length; i++) {
       const item = selectedFiles[i];
