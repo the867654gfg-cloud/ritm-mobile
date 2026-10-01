@@ -70,7 +70,8 @@ export default function UploadScreen() {
 
         const cleanFileName = item.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const fileExt = cleanFileName.split('.').pop() || 'mp3';
-        const storagePath = `${userId}/${Date.now()}_${cleanFileName}`;
+        const timestamp = Date.now();
+        const storagePath = `${userId}/${timestamp}_${cleanFileName}`;
 
         let uploadPayload: any = item.fileObj;
 
@@ -97,10 +98,11 @@ export default function UploadScreen() {
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
         const title = nameWithoutExt.trim();
 
-        // 3. Запись метаданных трека в БД Supabase (только существующие колонки)
+        // 3. Запись метаданных трека в БД Supabase с генерацией обязательного id
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
+            id: String(timestamp),
             title: title,
             audio_url: publicAudioUrl,
           });
