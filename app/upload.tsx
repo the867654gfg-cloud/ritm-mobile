@@ -93,23 +93,15 @@ export default function UploadScreen() {
 
         const publicAudioUrl = urlData.publicUrl;
 
-        // Извлекаем название и исполнителя из имени файла
+        // Извлекаем название трека из имени файла
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
-        const parts = nameWithoutExt.split(' - ');
-        let artist = 'Неизвестный исполнитель';
-        let title = nameWithoutExt;
+        const title = nameWithoutExt.trim();
 
-        if (parts.length >= 2) {
-          artist = parts[0].trim();
-          title = parts.slice(1).join(' - ').trim();
-        }
-
-        // 3. Запись метаданных трека в БД Supabase с правильной колонкой audio_url
+        // 3. Запись метаданных трека в БД Supabase (только существующие колонки)
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
             title: title,
-            artist: artist,
             audio_url: publicAudioUrl,
           });
 
