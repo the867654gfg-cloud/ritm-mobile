@@ -1,6 +1,7 @@
 {
   "name": "ritm-mobile",
   "version": "1.0.0",
+  "homepage": "https://the867654gfg-cloud.github.io/ritm-mobile",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -8,12 +9,14 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "export:zip": "npx expo export --platform web --clear && powershell -Command \"Set-Location dist; Compress-Archive -Path * -DestinationPath ..\\dist.zip -Force; Set-Location ..\""
+    "deploy": "npx expo export --platform web --clear --public-url /ritm-mobile/ && powershell Copy-Item -Path dist/index.html -Destination dist/404.html -Force && gh-pages -d dist"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.0.2",
+    "@react-native-async-storage/async-storage": "*",
     "@supabase/supabase-js": "^2.45.4",
     "expo": "~51.0.0",
+    "expo-audio": "*",
     "expo-constants": "~16.0.2",
     "expo-font": "~12.0.7",
     "expo-linking": "~6.3.1",
@@ -31,7 +34,7 @@
   "devDependencies": {
     "@babel/core": "^7.20.0",
     "@types/react": "~18.2.45",
-    "gh-pages": "^6.3.0",
+    "gh-pages": "^6.1.1",
     "typescript": "^5.1.3"
   },
   "private": true

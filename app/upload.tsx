@@ -1,325 +1,259 @@
 ﻿import { useState } from 'react';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform } from 'react-native';
+import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, Modal } from 'react-native';
 import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 
-const DEFAULT_COVERS = [
-  'https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=500&q=80',
-  'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80',
-  'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&q=80',
-  'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&q=80',
-  'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=500&q=80',
-];
-
-// Извлекатель обложек MP3 (ID3v2.2, ID3v2.3, ID3v2.4)
-async function extractMp3Cover(file: File): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    if (!file || typeof FileReader === 'undefined') return resolve(null);
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      try {
-        const buffer = e.target?.result as ArrayBuffer;
-        if (!buffer || buffer.byteLength < 10) return resolve(null);
-        const view = new DataView(buffer);
-
-        if (view.getUint8(0) !== 0x49 || view.getUint8(1) !== 0x44 || view.getUint8(2) !== 0x33) {
-          return resolve(null);
-        }
-
-        const version = view.getUint8(3);
-        const tagSize = ((view.getUint8(6) & 0x7f) << 21) |
-                        ((view.getUint8(7) & 0x7f) << 14) |
-                        ((view.getUint8(8) & 0x7f) << 7)  |
-                         (view.getUint8(9) & 0x7f);
-
-        let offset = 10;
-        const maxOffset = Math.min(buffer.byteLength, tagSize + 10);
-
-        while (offset < maxOffset - 10) {
-          let frameId = '';
-          let frameSize = 0;
-          let headerSize = 10;
-
-          if (version === 2) {
-            frameId = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2));
-            frameSize = (view.getUint8(offset+3) << 16) | (view.getUint8(offset+4) << 8) | view.getUint8(offset+5);
-            headerSize = 6;
-          } else {
-            frameId = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2), view.getUint8(offset+3));
-            if (version === 4) {
-              frameSize = ((view.getUint8(offset+4) & 0x7f) << 21) |
-                          ((view.getUint8(offset+5) & 0x7f) << 14) |
-                          ((view.getUint8(offset+6) & 0x7f) << 7)  |
-                           (view.getUint8(offset+7) & 0x7f);
-            } else {
-              frameSize = view.getUint32(offset + 4);
-            }
-            headerSize = 10;
-          }
-
-          if (!frameId || frameSize <= 0 || offset + headerSize + frameSize > maxOffset) break;
-
-          if (frameId === 'APIC' || frameId === 'PIC') {
-            const frameStart = offset + headerSize;
-            const encoding = view.getUint8(frameStart);
-
-            let mimeType = 'image/jpeg';
-            let pos = frameStart + 1;
-
-            if (version === 2) {
-              const format = String.fromCharCode(view.getUint8(pos), view.getUint8(pos+1), view.getUint8(pos+2)).toLowerCase();
-              mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-              pos += 4;
-            } else {
-              let mimeStart = pos;
-              while (pos < frameStart + frameSize && view.getUint8(pos) !== 0) pos++;
-              const mimeBytes = new Uint8Array(buffer, mimeStart, pos - mimeStart);
-              const extractedMime = new TextDecoder().decode(mimeBytes);
-              if (extractedMime && extractedMime.includes('/')) mimeType = extractedMime;
-              pos += 2;
-            }
-
-            if (encoding === 0 || encoding === 3) {
-              while (pos < frameStart + frameSize && view.getUint8(pos) !== 0) pos++;
-              pos += 1;
-            } else {
-              while (pos < frameStart + frameSize - 1 && !(view.getUint8(pos) === 0 && view.getUint8(pos+1) === 0)) pos += 2;
-              pos += 2;
-            }
-
-            if (pos < frameStart + frameSize) {
-              const imgData = new Uint8Array(buffer, pos, (frameStart + frameSize) - pos);
-              return resolve(new Blob([imgData], { type: mimeType.startsWith('image/') ? mimeType : 'image/jpeg' }));
-            }
-          }
-
-          offset += headerSize + frameSize;
-        }
-        resolve(null);
-      } catch (e) {
-        resolve(null);
-      }
-    };
-    reader.onerror = () => resolve(null);
-    reader.readAsArrayBuffer(file.slice(0, Math.min(file.size, 4 * 1024 * 1024)));
-  });
+interface FileToUpload {
+  fileObj?: File;
+  name: string;
+  size: number;
+  uri?: string;
 }
 
 export default function UploadScreen() {
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [uploadedCount, setUploadedCount] = useState(0);
+  const [selectedFiles, setSelectedFiles] = useState<FileToUpload[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+  const [resultModal, setResultModal] = useState<{ visible: boolean; successCount: number; errors: string[] }>({
+    visible: false,
+    successCount: 0,
+    errors: []
+  });
 
-  const handlePickFiles = (e: any) => {
-    if (Platform.OS === 'web' && e.target.files) {
-      const selectedFiles = Array.from(e.target.files) as File[];
-      setFiles(selectedFiles.slice(0, 64));
+  // Выбор нескольких файлов
+  const handlePickFiles = () => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.accept = 'audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg';
+      
+      input.onchange = (e: any) => {
+        const files: FileList = e.target.files;
+        if (!files || files.length === 0) return;
+
+        const newFiles: FileToUpload[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          newFiles.push({
+            fileObj: f,
+            name: f.name,
+            size: f.size
+          });
+        }
+        setSelectedFiles(prev => [...prev, ...newFiles]);
+      };
+      input.click();
     }
   };
 
-  const handleBatchUpload = async () => {
-    if (files.length === 0) {
-      alert('Пожалуйста, выберите MP3 файлы!');
-      return;
-    }
+  // Процесс загрузки
+  const handleStartUpload = async () => {
+    if (selectedFiles.length === 0) return;
 
-    setUploading(true);
-    setUploadedCount(0);
+    setIsUploading(true);
+    setUploadProgress({ current: 0, total: selectedFiles.length });
+
     let successCount = 0;
-    const errorLog: string[] = [];
+    const errors: string[] = [];
 
-    for (let i = 0; i < files.length; i++) {
-      setCurrentIndex(i + 1);
-      const currentFile = files[i];
+    const { data: { session } } = await supabase.auth.getSession();
+    const userId = session?.user?.id || 'anonymous';
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const item = selectedFiles[i];
+      setUploadProgress({ current: i + 1, total: selectedFiles.length });
 
       try {
-        const fileExt = currentFile.name.split('.').pop() || 'mp3';
-        const fileId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-        const fileName = `${fileId}.${fileExt}`;
-
-        // 1. Извлечение встроенной обложки MP3
-        let finalCoverUrl = '';
-        try {
-          const coverBlob = await extractMp3Cover(currentFile);
-          if (coverBlob && coverBlob.size > 100) {
-            const coverFileName = `covers/cover_${fileId}.jpg`;
-            const { error: coverErr } = await supabase.storage
-              .from('music-storage')
-              .upload(coverFileName, coverBlob, {
-                contentType: coverBlob.type || 'image/jpeg',
-                upsert: true,
-              });
-
-            if (!coverErr) {
-              const { data: cUrlData } = supabase.storage
-                .from('music-storage')
-                .getPublicUrl(coverFileName);
-              if (cUrlData?.publicUrl) {
-                finalCoverUrl = cUrlData.publicUrl;
-              }
-            }
-          }
-        } catch (e) {}
-
-        // Если обложки в файле нет, выбираем красивую заглушку
-        if (!finalCoverUrl) {
-          finalCoverUrl = DEFAULT_COVERS[i % DEFAULT_COVERS.length];
+        if (!item.fileObj) {
+          throw new Error('Файл не выбран');
         }
 
-        // 2. Загрузка MP3 файла в Supabase Storage
-        const { error: uploadError } = await supabase.storage
+        // Очищаем имя файла для бакета
+        const cleanFileName = item.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const fileExt = cleanFileName.split('.').pop() || 'mp3';
+        const storagePath = `${userId}/${Date.now()}_${cleanFileName}`;
+
+        // 1. Загрузка файла в Supabase Storage
+        const { data: storageData, error: storageError } = await supabase.storage
           .from('music-storage')
-          .upload(fileName, currentFile, {
-            cacheControl: '3600',
-            upsert: true,
-            contentType: currentFile.type || 'audio/mpeg',
+          .upload(storagePath, item.fileObj, {
+            contentType: item.fileObj.type || `audio/${fileExt}`,
+            upsert: true
           });
 
-        if (uploadError) {
-          errorLog.push(`${currentFile.name}: ${uploadError.message}`);
-          continue;
+        if (storageError) {
+          throw storageError;
         }
 
-        const { data: urlData } = supabase.storage.from('music-storage').getPublicUrl(fileName);
-        const publicAudioUrl = urlData?.publicUrl;
+        // 2. Получение публичного URL
+        const { data: urlData } = supabase.storage
+          .from('music-storage')
+          .getPublicUrl(storagePath);
 
-        if (!publicAudioUrl) {
-          errorLog.push(`${currentFile.name}: не удалось получить URL`);
-          continue;
+        const publicAudioUrl = urlData.publicUrl;
+
+        // Извлекаем название и исполнителя из имени файла (Формат: "Исполнитель - Название.mp3")
+        const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
+        const parts = nameWithoutExt.split(' - ');
+        let artist = 'Неизвестный исполнитель';
+        let title = nameWithoutExt;
+
+        if (parts.length >= 2) {
+          artist = parts[0].trim();
+          title = parts.slice(1).join(' - ').trim();
         }
 
-        const cleanTitle = currentFile.name.replace(/\.[^/.]+$/, '');
-        const trackDbId = typeof crypto !== 'undefined' && crypto.randomUUID 
-          ? crypto.randomUUID() 
-          : `track_${fileId}`;
-
-        // 3. Запись в таблицу tracks с полем cover_key
-        const { error: dbError } = await supabase.from('tracks').insert([
-          {
-            id: trackDbId,
-            title: cleanTitle,
+        // 3. Запись метаданных трека в БД Supabase
+        const { error: dbError } = await supabase
+          .from('tracks')
+          .insert({
+            title: title,
+            artist: artist,
             genre: 'Deep House',
-            audio_url: publicAudioUrl,
-            cover_key: finalCoverUrl,
             duration: 180,
-          },
-        ]);
+            audio_url: publicAudioUrl,
+            user_id: session?.user?.id || null
+          });
 
         if (dbError) {
-          errorLog.push(`${currentFile.name}: Ошибка БД: ${dbError.message}`);
-        } else {
-          successCount++;
-          setUploadedCount(successCount);
+          // Если возникла ошибка базы данных, пробуем запасной формат колонок
+          await supabase.from('tracks').insert({
+            title: title,
+            artist: artist,
+            url: publicAudioUrl
+          });
         }
+
+        successCount++;
       } catch (err: any) {
-        errorLog.push(`${currentFile.name}: ${err?.message || 'Сбой'}`);
+        errors.push(`${item.name}: ${err.message || 'Ошибка сети/доступа'}`);
       }
     }
 
-    setUploading(false);
-
-    if (errorLog.length > 0) {
-      alert(`Загружено ${successCount} из ${files.length}.\n\nПричины:\n` + errorLog.join('\n'));
-    } else {
-      alert(`🎉 Успешно загружено треков: ${successCount} из ${files.length}`);
-    }
-
-    if (successCount > 0) {
-      router.back();
-    }
+    setIsUploading(false);
+    setSelectedFiles([]);
+    setResultModal({
+      visible: true,
+      successCount,
+      errors
+    });
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#141416', padding: 24 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
-        <Pressable onPress={() => router.back()} style={{ padding: 8, marginRight: 12 }}>
-          <Ionicons name="arrow-back" size={24} color="#ffffff" />
+    <View style={{ flex: 1, backgroundColor: '#0e0e11', padding: 24 }}>
+      {/* Шапка */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
+        <Pressable onPress={() => router.back()} style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}>
+          <Text style={{ color: '#ffffff', fontWeight: '700' }}>← Назад</Text>
         </Pressable>
-        <Text style={{ fontSize: 24, fontWeight: '800', color: '#ffffff' }}>Загрузить треки в облако</Text>
+        <Text style={{ fontSize: 22, fontWeight: '900', color: '#ffffff' }}>Загрузить треки в облако</Text>
+        <View style={{ width: 80 }} />
       </View>
 
-      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-        <View style={{ backgroundColor: '#1c1c1e', padding: 24, borderRadius: 20, borderWidth: 2, borderColor: 'rgba(250, 35, 59, 0.3)', alignItems: 'center', marginBottom: 20 }}>
-          <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(250, 35, 59, 0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
-            <Ionicons name="cloud-upload" size={32} color="#fa233b" />
-          </View>
-          
-          <Text style={{ fontSize: 18, fontWeight: '700', color: '#ffffff', marginBottom: 6 }}>Выберите MP3 файлы</Text>
-          <Text style={{ fontSize: 13, color: '#8e8e93', marginBottom: 20, textAlign: 'center' }}>
-            Обложки треков извлекутся автоматически (до 64 файлов)
-          </Text>
+      {/* Зона выбора файлов */}
+      <Pressable 
+        onPress={handlePickFiles}
+        disabled={isUploading}
+        style={{
+          borderWidth: 2,
+          borderColor: '#fa233b',
+          borderStyle: 'dashed',
+          borderRadius: 20,
+          padding: 32,
+          alignItems: 'center',
+          backgroundColor: 'rgba(250, 35, 59, 0.05)',
+          marginBottom: 24
+        }}
+      >
+        <Text style={{ fontSize: 40, marginBottom: 12 }}>🎵</Text>
+        <Text style={{ fontSize: 18, fontWeight: '800', color: '#ffffff', marginBottom: 6 }}>Выберите аудиофайлы</Text>
+        <Text style={{ fontSize: 13, color: '#8e8e93', textAlign: 'center' }}>Поддерживаются MP3, WAV, FLAC, M4A</Text>
+      </Pressable>
 
-          {Platform.OS === 'web' && (
-            <label style={{
-              backgroundColor: '#fa233b',
-              color: '#ffffff',
-              paddingHorizontal: 24,
-              paddingVertical: 12,
-              borderRadius: 12,
-              fontWeight: '700',
-              fontSize: 14,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
-              <Ionicons name="folder-open-outline" size={18} color="#ffffff" />
-              Обзор файлов...
-              <input type="file" accept="audio/*" multiple onChange={handlePickFiles} style={{ display: 'none' }} />
-            </label>
-          )}
-        </View>
-
-        {files.length > 0 && (
-          <View style={{ backgroundColor: '#1c1c1e', padding: 20, borderRadius: 16, marginBottom: 24 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <Text style={{ fontSize: 14, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase' }}>
-                Выбрано файлов: {files.length} (макс. 64)
-              </Text>
-              <Pressable onPress={() => setFiles([])}>
-                <Text style={{ fontSize: 12, color: '#fa233b', fontWeight: '600' }}>Очистить</Text>
+      {/* Список выбранных файлов */}
+      {selectedFiles.length > 0 && (
+        <View style={{ flex: 1, marginBottom: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <Text style={{ color: '#8e8e93', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' }}>
+              Выбрано файлов: {selectedFiles.length}
+            </Text>
+            {!isUploading && (
+              <Pressable onPress={() => setSelectedFiles([])}>
+                <Text style={{ color: '#fa233b', fontSize: 13, fontWeight: '700' }}>Очистить</Text>
               </Pressable>
-            </View>
+            )}
+          </View>
 
-            {files.map((file, idx) => (
-              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#2c2c2e', padding: 10, borderRadius: 8, marginBottom: 6 }}>
-                <Ionicons name="musical-note" size={18} color="#fa233b" style={{ marginRight: 10 }} />
-                <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, color: '#ffffff', fontWeight: '500' }}>{file.name}</Text>
-                <Text style={{ fontSize: 11, color: '#8e8e93', marginLeft: 8 }}>{(file.size / (1024 * 1024)).toFixed(1)} MB</Text>
+          <ScrollView style={{ flex: 1 }}>
+            {selectedFiles.map((file, idx) => (
+              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 12, borderRadius: 12, marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, marginRight: 12 }}>🎶</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{file.name}</Text>
+                  <Text style={{ color: '#8e8e93', fontSize: 11, marginTop: 2 }}>{(file.size / (1024 * 1024)).toFixed(2)} MB</Text>
+                </View>
               </View>
             ))}
-          </View>
-        )}
+          </ScrollView>
 
-        {files.length > 0 && (
-          <Pressable
-            onPress={handleBatchUpload}
-            disabled={uploading}
+          {/* Кнопка отправки */}
+          <Pressable 
+            onPress={handleStartUpload}
+            disabled={isUploading}
             style={{
-              backgroundColor: uploading ? '#444444' : '#fa233b',
+              backgroundColor: '#fa233b',
               paddingVertical: 16,
-              borderRadius: 14,
+              borderRadius: 16,
               alignItems: 'center',
-              marginBottom: 40,
+              marginTop: 12,
+              opacity: isUploading ? 0.6 : 1
             }}
           >
-            {uploading ? (
+            {isUploading ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <ActivityIndicator color="#ffffff" />
+                <ActivityIndicator color="#ffffff" size="small" />
                 <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>
-                  Загрузка {currentIndex} из {files.length}... ({uploadedCount} готово)
+                  Загрузка {uploadProgress.current} из {uploadProgress.total}...
                 </Text>
               </View>
             ) : (
-              <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 16 }}>
-                Загрузить все {files.length} треков с обложками
-              </Text>
+              <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 16 }}>Начать загрузку</Text>
             )}
           </Pressable>
-        )}
-      </ScrollView>
+        </View>
+      )}
+
+      {/* Модальное окно результата */}
+      <Modal animationType="fade" transparent visible={resultModal.visible}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ width: '100%', maxWidth: 420, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
+            <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff', marginBottom: 12 }}>Результат загрузки</Text>
+            <Text style={{ color: '#ffffff', fontSize: 15, marginBottom: 12 }}>
+              Успешно загружено: <Text style={{ color: '#4cd964', fontWeight: '800' }}>{resultModal.successCount}</Text>
+            </Text>
+
+            {resultModal.errors.length > 0 && (
+              <View style={{ backgroundColor: 'rgba(250, 35, 59, 0.15)', padding: 12, borderRadius: 12, marginBottom: 16 }}>
+                <Text style={{ color: '#fa233b', fontWeight: '800', fontSize: 13, marginBottom: 6 }}>Ошибки:</Text>
+                {resultModal.errors.map((err, i) => (
+                  <Text key={i} style={{ color: '#ffffff', fontSize: 12, marginBottom: 4 }}>• {err}</Text>
+                ))}
+              </View>
+            )}
+
+            <Pressable 
+              onPress={() => {
+                setResultModal({ visible: false, successCount: 0, errors: [] });
+                router.replace('/(tabs)');
+              }}
+              style={{ backgroundColor: '#fa233b', paddingVertical: 12, borderRadius: 12, alignItems: 'center' }}
+            >
+              <Text style={{ color: '#ffffff', fontWeight: '800' }}>Перейти к трекам</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
