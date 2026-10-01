@@ -147,7 +147,6 @@ export default function CatalogScreen() {
   const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
   const [newPlaylistTitle, setNewPlaylistTitle] = useState('');
   
-  // Инициализация плейлистов и лайков с сохранением в localStorage
   const [userPlaylists, setUserPlaylists] = useState<{ id: string; title: string; tracks: Track[]; cover?: string }[]>(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
@@ -197,7 +196,7 @@ export default function CatalogScreen() {
   const [currentQueue, setCurrentQueue] = useState<Track[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music' | 'my_playlists'>('main');
+  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music'>('main');
   
   const [volume, setVolume] = useState(0.7);
   const [prevVolume, setPrevVolume] = useState(0.7);
@@ -252,25 +251,6 @@ export default function CatalogScreen() {
 
     return () => authListener.subscription.unsubscribe();
   }, []);
-
-  const pickImageFile = (onSuccess: (uri: string) => void) => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = (e: any) => {
-        const file = e.target.files?.[0];
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-            if (ev.target?.result) onSuccess(ev.target.result as string);
-          };
-          reader.readAsDataURL(file);
-        }
-      };
-      input.click();
-    }
-  };
 
   const loadCloudTracks = async () => {
     try {
@@ -364,13 +344,27 @@ export default function CatalogScreen() {
     return () => clearTimeout(timer);
   }, [searchQuery, selectedGenre, hiddenTrackIds]);
 
+  // Строгое отслеживание таймера, чтобы не выходить за пределы длительности трека
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (!webAudioRef.current) webAudioRef.current = new Audio();
       webAudioRef.current.volume = volume;
       const audio = webAudioRef.current;
-      const updateTime = () => { if (!isDraggingSeek) setCurrentTime(audio.currentTime); };
-      const updateDuration = () => { if (audio.duration && !isNaN(audio.duration)) setTrackDuration(audio.duration); };
+      
+      const updateTime = () => { 
+        if (!isDraggingSeek) {
+          const dur = audio.duration || trackDuration || 0;
+          if (dur > 0 && audio.currentTime >= dur) {
+            setCurrentTime(dur);
+          } else {
+            setCurrentTime(audio.currentTime);
+          }
+        } 
+      };
+      const updateDuration = () => { 
+        if (audio.duration && !isNaN(audio.duration)) setTrackDuration(audio.duration); 
+      };
+
       audio.addEventListener('timeupdate', updateTime);
       audio.addEventListener('loadedmetadata', updateDuration);
       audio.addEventListener('ended', handleNext);
@@ -380,7 +374,7 @@ export default function CatalogScreen() {
         audio.removeEventListener('ended', handleNext);
       };
     }
-  }, [isDraggingSeek, currentQueue, isShuffle]);
+  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration]);
 
   const updateSeekPosition = (clientX: number) => {
     const activeDuration = m?.currentTrack?.duration || trackDuration || 0;
@@ -581,7 +575,7 @@ export default function CatalogScreen() {
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
       <View style={{ flex: 1, flexDirection: 'row', overflow: 'hidden' }}>
         
-        {/* ЛЕВОЕ МЕНЮ */}
+        {/* ЛЕВОЕ МЕНЮ (без кнопки загрузки) */}
         <View style={{ 
           width: 250, 
           backgroundColor: '#fafafa', 
@@ -591,30 +585,11 @@ export default function CatalogScreen() {
           paddingHorizontal: 16,
           zIndex: 50
         }}>
-          {/* ВЕРХНЯЯ ПАНЕЛЬ ЛОГОТИПА И КНОПОК ВХОДА */}
           <View style={{ marginBottom: 28, zIndex: 60 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={{ fontSize: 26, fontWeight: '900', color: '#000000', letterSpacing: -0.5 }}>Ритм<Text style={{ color: '#fa233b' }}>.</Text></Text>
-
-              {/* Кнопка Загрузить в боковом меню доступна ВСЕМ */}
-              <Pressable
-                onPress={() => router.push('/upload')}
-                style={{
-                  backgroundColor: '#fa233b',
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 10,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-              >
-                <WebIcon name="add-outline" size={16} color="#ffffff" />
-                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Загрузить</Text>
-              </Pressable>
             </View>
 
-            {/* КОМПАКТНЫЕ КНОПКИ ВХОДА / РЕГИСТРАЦИИ (Для гостей) */}
             {!userProfile?.isLoggedIn ? (
               <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
                 <Pressable 
@@ -657,7 +632,6 @@ export default function CatalogScreen() {
                 </Pressable>
               </View>
             ) : (
-              /* Кликабельный профиль вошедшего пользователя */
               <Pressable 
                 onPress={() => setShowProfileMenu(!showProfileMenu)}
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
@@ -670,7 +644,6 @@ export default function CatalogScreen() {
               </Pressable>
             )}
 
-            {/* ВЫПАДАЮЩЕЕ МЕНЮ АККАУНТА */}
             {showProfileMenu && userProfile?.isLoggedIn && (
               <View style={{ 
                 position: 'absolute', 
@@ -740,7 +713,6 @@ export default function CatalogScreen() {
               { id: 'main', label: 'Слушать' },
               { id: 'uploads', label: 'Загруженные' },
               { id: 'my_music', label: 'Моя музыка' },
-              { id: 'my_playlists', label: 'Мои плейлисты' },
             ].map((tab: any) => {
               const isActive = activeTab === tab.id;
               return (
@@ -770,12 +742,15 @@ export default function CatalogScreen() {
         <View style={{ flex: 1, paddingTop: 32, paddingHorizontal: 28, paddingBottom: 120 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <Text style={{ fontSize: 32, fontWeight: '800', color: '#000000' }}>
-              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'my_music' ? 'Моя музыка' : 'Мои плейлисты'}
+              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : 'Моя музыка'}
             </Text>
 
-            <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
-              <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
-            </Pressable>
+            {/* Кнопка загрузки ТОЛЬКО на вкладке Загруженные */}
+            {activeTab === 'uploads' && (
+              <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
+              </Pressable>
+            )}
           </View>
 
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
@@ -928,15 +903,69 @@ export default function CatalogScreen() {
             </ScrollView>
           )}
 
-          {/* ВКЛАДКА 3: МОЯ МУЗЫКА */}
+          {/* ВКЛАДКА 3: МОЯ МУЗЫКА (включая Плейлисты сверху) */}
           {activeTab === 'my_music' && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              
+              {/* Плейлисты сверху в Моей музыке */}
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
+                Мои плейлисты ({userPlaylists.length})
+              </Text>
+              
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 24, paddingVertical: 4 }}>
+                <Pressable 
+                  onPress={() => setShowCreatePlaylistModal(true)}
+                  style={({ pressed }) => ({ 
+                    width: 140, 
+                    height: 170,
+                    backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                    borderRadius: 18, 
+                    padding: 12, 
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    borderWidth: 2, 
+                    borderColor: '#fa233b',
+                    borderStyle: 'dashed',
+                    marginRight: 14,
+                    transform: [{ scale: pressed ? 0.95 : 1 }]
+                  })}
+                >
+                  <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(250, 35, 59, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 10 }}>
+                    <WebIcon name="add-outline" size={24} color="#fa233b" />
+                  </View>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: '#fa233b', textAlign: 'center' }}>Создать плейлист</Text>
+                </Pressable>
+
+                {userPlaylists.map((pl) => (
+                  <Pressable 
+                    key={pl.id}
+                    onPress={() => setSelectedPlaylistModal({ title: pl.title, tracks: pl.tracks })}
+                    style={({ pressed }) => ({ 
+                      width: 140, 
+                      height: 170,
+                      backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                      borderRadius: 18, 
+                      padding: 12, 
+                      marginRight: 14,
+                      transform: [{ scale: pressed ? 0.95 : 1 }]
+                    })}
+                  >
+                    <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 32 }}>📚</Text>
+                    </View>
+                    <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+
+              {/* Сохраненные треки со счетчиком */}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
                 Сохраненные треки ({myMusicTracks.length})
               </Text>
 
               {myMusicTracks.length === 0 ? (
-                <View style={{ padding: 24, backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, borderRadius: 16, alignItems: 'center' }}>
+                <View style={{ padding: 24, backgroundColor: 'rgba(255, 255, 255, 0.8)', borderRadius: 16, alignItems: 'center' }}>
                   <Text style={{ fontSize: 32, marginBottom: 8 }}>🤍</Text>
                   <Text style={{ color: '#8e8e93', fontSize: 14 }}>В вашей музыке пока нет сохраненных треков.</Text>
                 </View>
@@ -944,7 +973,7 @@ export default function CatalogScreen() {
                 myMusicTracks.map((item) => {
                   const isSelected = m?.currentTrack?.id === item.id;
                   return (
-                    <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)' }}>
+                    <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)' }}>
                       <Pressable onPress={() => void safePlayTrack(item, myMusicTracks, 'Моя музыка')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
                         <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                         <View style={{ flex: 1 }}>
@@ -961,148 +990,105 @@ export default function CatalogScreen() {
               )}
             </ScrollView>
           )}
-
-          {/* ВКЛАДКА 4: МОИ ПЛЕЙЛИСТЫ */}
-          {activeTab === 'my_playlists' && (
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 16 }}>
-                Мои плейлисты ({userPlaylists.length})
-              </Text>
-
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                <Pressable 
-                  onPress={() => setShowCreatePlaylistModal(true)}
-                  style={({ pressed }) => ({ 
-                    width: 170, 
-                    height: 210,
-                    backgroundColor: 'rgba(255, 255, 255, 0.8)', 
-                    backdropFilter: 'blur(16px)' as any,
-                    borderRadius: 18, 
-                    padding: 14, 
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    borderWidth: 2, 
-                    borderColor: '#fa233b',
-                    borderStyle: 'dashed',
-                    transform: [{ scale: pressed ? 0.95 : 1 }]
-                  })}
-                >
-                  <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(250, 35, 59, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
-                    <WebIcon name="add-outline" size={32} color="#fa233b" />
-                  </View>
-                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#fa233b', textAlign: 'center' }}>Создать плейлист</Text>
-                </Pressable>
-
-                {userPlaylists.map((pl) => (
-                  <Pressable 
-                    key={pl.id}
-                    onPress={() => setSelectedPlaylistModal({ title: pl.title, tracks: pl.tracks })}
-                    style={({ pressed }) => ({ 
-                      width: 170, 
-                      height: 210,
-                      backgroundColor: 'rgba(255, 255, 255, 0.8)', 
-                      backdropFilter: 'blur(16px)' as any,
-                      padding: 14, 
-                      borderRadius: 18, 
-                      borderWidth: 1, 
-                      borderColor: 'rgba(255, 255, 255, 0.6)',
-                      transform: [{ scale: pressed ? 0.95 : 1 }]
-                    })}
-                  >
-                    <View style={{ width: '100%', height: 120, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 10, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
-                      <Text style={{ fontSize: 38 }}>📚</Text>
-                    </View>
-                    <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
-                    <Text numberOfLines={1} style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </ScrollView>
-          )}
         </View>
       </View>
 
-      {/* НИЖНИЙ ПЛЕЕР */}
+      {/* НИЖНИЙ ПЛЕЕР (уменьшен по длине и сильнее закруглен, с яркой точкой на ползунке) */}
       <View style={{
         position: 'absolute',
         bottom: 20,
-        left: 24,
-        right: 24,
-        height: 90, 
-        backgroundColor: 'rgba(25, 25, 30, 0.45)', 
+        alignSelf: 'center',
+        width: '65%',
+        maxWidth: 780,
+        height: 84, 
+        backgroundColor: 'rgba(25, 25, 30, 0.6)', 
         backdropFilter: 'blur(35px) saturate(180%)' as any,
-        borderRadius: 24,
+        borderRadius: 32,
         borderWidth: 1, 
-        borderColor: 'rgba(255, 255, 255, 0.22)', 
+        borderColor: 'rgba(255, 255, 255, 0.25)', 
         flexDirection: 'row', 
         justifyContent: 'space-between', 
         alignItems: 'center', 
-        paddingHorizontal: 24, 
-        boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)' as any,
+        paddingHorizontal: 22, 
+        boxShadow: '0 12px 35px rgba(0, 0, 0, 0.3)' as any,
         zIndex: 100
       }}>
-        <View style={{ position: 'absolute', top: 8, left: 24, right: 24, height: 12, zIndex: 120, justifyContent: 'center' }}>
+        {/* Ползунок с яркой светящейся точкой */}
+        <View style={{ position: 'absolute', top: 6, left: 22, right: 22, height: 12, zIndex: 120, justifyContent: 'center' }}>
           <Pressable 
             ref={seekBarContainerRef} 
             onPressIn={(e) => { setIsDraggingSeek(true); updateSeekPosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} 
             style={{ height: '100%', width: '100%', justifyContent: 'center', cursor: 'pointer' }}
           >
             {/* @ts-ignore */}
-            <View pointerEvents="none" style={{ width: '100%', height: 3.5, backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: 2, position: 'relative' }}>
-              <View style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
+            <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: 2, position: 'relative' }}>
+              <View style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2, boxShadow: '0 0 8px rgba(250, 35, 59, 0.9)' as any }} />
+              <View style={{
+                position: 'absolute',
+                left: `${Math.min(99, Math.max(0.5, progressPercent))}%`,
+                top: -4,
+                width: 12,
+                height: 12,
+                borderRadius: 6,
+                backgroundColor: '#ffffff',
+                borderWidth: 2.5,
+                borderColor: '#fa233b',
+                transform: [{ translateX: -6 }],
+                boxShadow: '0 0 10px #fa233b, 0 2px 6px rgba(0,0,0,0.5)' as any
+              }} />
             </View>
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', width: 320, marginTop: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', width: 260, marginTop: 6 }}>
           {m?.currentTrack ? (
             <>
-              <TrackCoverImage track={m.currentTrack} style={{ width: 54, height: 54, borderRadius: 14, marginRight: 14 }} />
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#ffffff' }}>{m.currentTrack.title}</Text>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b', marginTop: 3 }}>
+              <TrackCoverImage track={m.currentTrack} style={{ width: 48, height: 48, borderRadius: 12, marginRight: 12 }} />
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '800', color: '#ffffff' }}>{m.currentTrack.title}</Text>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b', marginTop: 2 }}>
                   {formatTime(currentTime)} / {formatTime(activeDuration)}
                 </Text>
               </View>
-              <Pressable onPress={() => toggleAddToMyMusic(m.currentTrack)} style={{ padding: 8 }}>
-                <WebIcon name={isCurrentTrackFavorite ? "heart" : "heart-outline"} size={20} color="#fa233b" />
+              <Pressable onPress={() => toggleAddToMyMusic(m.currentTrack)} style={{ padding: 6 }}>
+                <WebIcon name={isCurrentTrackFavorite ? "heart" : "heart-outline"} size={18} color="#fa233b" />
               </Pressable>
             </>
           ) : (
-            <Text style={{ fontSize: 14, color: '#a1a1a6', fontWeight: '500' }}>Музыка не выбрана</Text>
+            <Text style={{ fontSize: 13, color: '#a1a1a6', fontWeight: '500' }}>Музыка не выбрана</Text>
           )}
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}>
-          <Pressable onPress={() => setIsShuffle(!isShuffle)} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: isShuffle ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isShuffle ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name="shuffle" size={16} color={isShuffle ? '#fa233b' : '#ffffff'} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 }}>
+          <Pressable onPress={() => setIsShuffle(!isShuffle)} style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isShuffle ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isShuffle ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
+            <WebIcon name="shuffle" size={15} color={isShuffle ? '#fa233b' : '#ffffff'} />
           </Pressable>
-          <Pressable onPress={handlePrevious} style={{ width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name="play-skip-back" size={18} color="#ffffff" />
+          <Pressable onPress={handlePrevious} style={{ width: 38, height: 38, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
+            <WebIcon name="play-skip-back" size={16} color="#ffffff" />
           </Pressable>
-          <Pressable onPress={handleTogglePlay} style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: '#fa233b', borderWidth: 2, borderColor: 'rgba(255, 255, 255, 0.35)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name={m?.isPlaying ? "pause" : "play"} size={20} color="#ffffff" />
+          <Pressable onPress={handleTogglePlay} style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: '#fa233b', borderWidth: 2, borderColor: 'rgba(255, 255, 255, 0.35)', justifyContent: 'center', alignItems: 'center', boxShadow: '0 4px 15px rgba(250, 35, 59, 0.5)' as any }}>
+            <WebIcon name={m?.isPlaying ? "pause" : "play"} size={18} color="#ffffff" />
           </Pressable>
-          <Pressable onPress={handleNext} style={{ width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name="play-skip-forward" size={18} color="#ffffff" />
+          <Pressable onPress={handleNext} style={{ width: 38, height: 38, borderRadius: 19, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
+            <WebIcon name="play-skip-forward" size={16} color="#ffffff" />
           </Pressable>
-          <Pressable onPress={() => setIsRepeat(!isRepeat)} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: isRepeat ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isRepeat ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name="repeat" size={16} color={isRepeat ? '#fa233b' : '#ffffff'} />
+          <Pressable onPress={() => setIsRepeat(!isRepeat)} style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isRepeat ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isRepeat ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
+            <WebIcon name="repeat" size={15} color={isRepeat ? '#fa233b' : '#ffffff'} />
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, width: 260, marginTop: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 10, width: 220, marginTop: 6 }}>
           <Pressable onPress={handleMuteToggle} style={{ padding: 4 }}>
-            <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={18} color="#ffffff" />
+            <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={16} color="#ffffff" />
           </Pressable>
-          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer' }}>
+          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 70, height: 20, justifyContent: 'center', cursor: 'pointer' }}>
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: 2 }}>
               <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
             </View>
           </Pressable>
-          <Pressable onPress={() => setShowEqualizerModal(true)} style={{ width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
-            <WebIcon name="options-outline" size={16} color="#ffffff" />
+          <Pressable onPress={() => setShowEqualizerModal(true)} style={{ width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
+            <WebIcon name="options-outline" size={15} color="#ffffff" />
           </Pressable>
         </View>
       </View>
@@ -1136,7 +1122,6 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
-      {/* МОДАЛЬНОЕ ОКНО ПЛЕЙЛИСТА */}
       <Modal animationType="fade" transparent visible={!!selectedPlaylistModal}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <View style={{ width: '100%', maxWidth: 560, maxHeight: '80%', backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' }}>
@@ -1172,7 +1157,6 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
-      {/* МЕНЮ ТРЕКОВ C ДОБАВЛЕНИЕМ В ПЛЕЙЛИСТЫ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           {selectedTrackMenu && (
