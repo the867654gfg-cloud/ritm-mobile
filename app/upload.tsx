@@ -111,19 +111,11 @@ export default function UploadScreen() {
           .from('tracks')
           .insert({
             title: title,
-            artist: artist,
-            genre: 'Deep House',
-            duration: 180,
-            audio_url: publicAudioUrl,
-            user_id: null
+            audio_uri: publicAudioUrl,
           });
 
         if (dbError) {
-          await supabase.from('tracks').insert({
-            title: title,
-            artist: artist,
-            url: publicAudioUrl
-          });
+          throw dbError;
         }
 
         successCount++;
