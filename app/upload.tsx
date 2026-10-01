@@ -20,10 +20,9 @@ async function extractMetadata(file: File): Promise<{ duration: number; coverBlo
     audio.preload = 'metadata';
 
     audio.onloadedmetadata = async () => {
-      const duration = audio.duration && !isNaN(audio.duration) ? audio.duration : 180;
+      const duration = audio.duration && !isNaN(audio.duration) ? Math.round(audio.duration) : 180;
       URL.revokeObjectURL(url);
 
-      // Пробуем извлечь картинку через jsmediatags или чтение ArrayBuffer
       try {
         const reader = new FileReader();
         reader.onload = function (e) {
@@ -33,44 +32,35 @@ async function extractMetadata(file: File): Promise<{ duration: number; coverBlo
               resolve({ duration, coverBlob: null });
               return;
             }
-            // Простейший поиск тега APIC / Cover в ID3v2
-            const view = new DataView(buffer);
-            let offset = 0;
-            // Проверка заголовка ID3
-            if (view.getUint8(0) === 0x49 && view.getUint8(1) === 0x44 && view.getUint8(2) === 0x33) {
-              // Проходим по байтам в поисках изображений (image/jpeg или image/png)
-              const bytes = new Uint8Array(buffer);
-              let foundIndex = -1;
-              let mimeType = 'image/jpeg';
+            const bytes = new Uint8Array(buffer);
+            let foundIndex = -1;
+            let mimeType = 'image/jpeg';
 
-              for (let i = 0; i < bytes.length - 10; i++) {
-                if (
-                  (bytes[i] === 0xff && bytes[i + 1] === 0xd8) || // JPEG SOF
-                  (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x47) // PNG
-                ) {
-                  // Проверяем, не слишком ли рано (ищем примерно в заголовке тегов)
-                  if (i > 0 && i < 50000) {
-                    foundIndex = i;
-                    if (bytes[i] === 0x89) mimeType = 'image/png';
-                    break;
-                  }
+            for (let i = 0; i < bytes.length - 10; i++) {
+              if (
+                (bytes[i] === 0xff && bytes[i + 1] === 0xd8) || 
+                (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x47)
+              ) {
+                if (i > 0 && i < 50000) {
+                  foundIndex = i;
+                  if (bytes[i] === 0x89) mimeType = 'image/png';
+                  break;
                 }
               }
+            }
 
-              if (foundIndex !== -1) {
-                // Вырезаем картинку до конца тегов или разумного размера
-                const imageBytes = bytes.slice(foundIndex, foundIndex + 500000); 
-                const coverBlob = new Blob([imageBytes], { type: mimeType });
-                resolve({ duration, coverBlob });
-                return;
-              }
+            if (foundIndex !== -1) {
+              const imageBytes = bytes.slice(foundIndex, foundIndex + 500000); 
+              const coverBlob = new Blob([imageBytes], { type: mimeType });
+              resolve({ duration, coverBlob });
+              return;
             }
             resolve({ duration, coverBlob: null });
           } catch (err) {
             resolve({ duration, coverBlob: null });
           }
         };
-        reader.readAsArrayBuffer(file.slice(0, 200000)); // читаем первые 200Кб где обычно лежит обложка
+        reader.readAsArrayBuffer(file.slice(0, 200000));
       } catch (ex) {
         resolve({ duration, coverBlob: null });
       }
@@ -93,7 +83,6 @@ export default function UploadScreen() {
     errors: []
   });
 
-  // Выбор нескольких файлов с предварительным чтением метаданных
   const handlePickFiles = () => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input');
@@ -123,7 +112,6 @@ export default function UploadScreen() {
     }
   };
 
-  // Процесс загрузки
   const handleStartUpload = async () => {
     if (selectedFiles.length === 0) return;
 
@@ -148,7 +136,7 @@ export default function UploadScreen() {
         const timestamp = Date.now();
         const storagePath = `${userId}/${timestamp}_${cleanFileName}`;
 
-        // 1. Загрузка аудиофайла в Supabase Storage
+        // 1. Загрузка аудиофайла
         const { error: storageError } = await supabase.storage
           .from('music-storage')
           .upload(storagePath, item.fileObj, {
@@ -163,7 +151,7 @@ export default function UploadScreen() {
           .getPublicUrl(storagePath);
         const publicAudioUrl = urlData.publicUrl;
 
-        // 2. Если у файла есть встроенная обложка, загружаем её тоже в Supabase Storage
+        // 2. Загрузка обложки (если есть)
         let publicCoverUrl = '';
         if (item.coverBlob) {
           const coverPath = `${userId}/${timestamp}_cover.jpg`;
@@ -182,11 +170,10 @@ export default function UploadScreen() {
           }
         }
 
-        // Извлекаем название трека из имени файла
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
         const title = nameWithoutExt.trim();
 
-        // 3. Запись метаданных трека в БД Supabase (включая обложку и реальную длительность)
+        // 3. Запись метаданных в БД (длительность приведена к целому числу)
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
@@ -194,7 +181,7 @@ export default function UploadScreen() {
             title: title,
             audio_url: publicAudioUrl,
             cover_key: publicCoverUrl || null,
-            duration: item.duration || 180,
+            duration: item.duration ? Math.round(item.duration) : 180,
             genre: 'Deep House'
           });
 
@@ -217,7 +204,6 @@ export default function UploadScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0e0e11', padding: 24 }}>
-      {/* Шапка */}
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
         <Pressable onPress={() => router.back()} style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}>
           <Text style={{ color: '#ffffff', fontWeight: '700' }}>← Назад</Text>
@@ -226,7 +212,6 @@ export default function UploadScreen() {
         <View style={{ width: 80 }} />
       </View>
 
-      {/* Зона выбора файлов */}
       <Pressable 
         onPress={handlePickFiles}
         disabled={isUploading}
@@ -246,7 +231,6 @@ export default function UploadScreen() {
         <Text style={{ fontSize: 13, color: '#8e8e93', textAlign: 'center' }}>Поддерживаются MP3 с обложками, WAV, FLAC, M4A</Text>
       </Pressable>
 
-      {/* Список выбранных файлов */}
       {selectedFiles.length > 0 && (
         <View style={{ flex: 1, marginBottom: 20 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -274,7 +258,6 @@ export default function UploadScreen() {
             ))}
           </ScrollView>
 
-          {/* Кнопка отправки */}
           <Pressable 
             onPress={handleStartUpload}
             disabled={isUploading}
@@ -301,7 +284,6 @@ export default function UploadScreen() {
         </View>
       )}
 
-      {/* Модальное окно результата */}
       <Modal animationType="fade" transparent visible={resultModal.visible}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <View style={{ width: '100%', maxWidth: 420, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
