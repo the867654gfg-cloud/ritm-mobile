@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 
 interface FileToUpload {
-  fileObj?: File;
+  fileObj?: File | any;
   name: string;
   size: number;
   uri?: string;
@@ -74,10 +74,16 @@ export default function UploadScreen() {
         const fileExt = cleanFileName.split('.').pop() || 'mp3';
         const storagePath = `${userId}/${Date.now()}_${cleanFileName}`;
 
+        // Гарантируем корректный формат полезной нагрузки для веб-среды
+        let uploadPayload: any = item.fileObj;
+        if (Platform.OS === 'web') {
+          uploadPayload = item.fileObj;
+        }
+
         // 1. Загрузка файла в Supabase Storage
         const { data: storageData, error: storageError } = await supabase.storage
           .from('music-storage')
-          .upload(storagePath, item.fileObj, {
+          .upload(storagePath, uploadPayload, {
             contentType: item.fileObj.type || `audio/${fileExt}`,
             upsert: true
           });
@@ -117,7 +123,7 @@ export default function UploadScreen() {
           });
 
         if (dbError) {
-          // Если возникла ошибка базы данных, пробуем запасной формат колонок
+          // Если возникла ошибка структуры БД, используем резервный вариант
           await supabase.from('tracks').insert({
             title: title,
             artist: artist,
