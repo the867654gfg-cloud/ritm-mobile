@@ -36,7 +36,7 @@ function WebIcon({ name, size = 18, color = '#ffffff' }: { name: string; size?: 
 
   if (Platform.OS === 'web') {
     return (
-      <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+      <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }}>
         {/* @ts-ignore */}
         <svg width={size} height={size} viewBox="0 0 24 24" fill={color} style={{ display: 'block' }}>
           {/* @ts-ignore */}
@@ -146,7 +146,43 @@ export default function CatalogScreen() {
   
   const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
   const [newPlaylistTitle, setNewPlaylistTitle] = useState('');
-  const [userPlaylists, setUserPlaylists] = useState<{ id: string; title: string; tracks: Track[]; cover?: string }[]>([]);
+  
+  // Инициализация плейлистов и лайков с сохранением в localStorage
+  const [userPlaylists, setUserPlaylists] = useState<{ id: string; title: string; tracks: Track[]; cover?: string }[]>(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('ritm_user_playlists');
+        if (saved) return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return [];
+  });
+
+  const [myMusicTracks, setMyMusicTracks] = useState<Track[]>(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('ritm_my_music');
+        if (saved) return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('ritm_user_playlists', JSON.stringify(userPlaylists));
+      } catch (e) {}
+    }
+  }, [userPlaylists]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('ritm_my_music', JSON.stringify(myMusicTracks));
+      } catch (e) {}
+    }
+  }, [myMusicTracks]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState<string>('Все жанры');
@@ -156,7 +192,6 @@ export default function CatalogScreen() {
   });
 
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
-  const [myMusicTracks, setMyMusicTracks] = useState<Track[]>([]);
   const [globalSearchResults, setGlobalSearchResults] = useState<Track[]>([]);
   const [hiddenTrackIds, setHiddenTrackIds] = useState<string[]>([]);
   const [currentQueue, setCurrentQueue] = useState<Track[]>([]);
@@ -235,111 +270,6 @@ export default function CatalogScreen() {
       };
       input.click();
     }
-  };
-
-  const handleRegisterSubmit = async () => {
-    if (!emailInput.trim() || !emailInput.includes('@')) {
-      setAuthError('Введите корректный email адрес');
-      return;
-    }
-    if (!passwordInput.trim() || passwordInput.length < 6) {
-      setAuthError('Пароль должен содержать не менее 6 символов');
-      return;
-    }
-    setAuthError('');
-    setIsLoadingAuth(true);
-
-    try {
-      const finalName = setupName.trim() || 'Пользователь';
-      const { error } = await supabase.auth.signUp({
-        email: emailInput.trim(),
-        password: passwordInput.trim(),
-        options: {
-          data: {
-            full_name: finalName,
-            avatar_url: setupAvatar,
-          }
-        }
-      });
-
-      if (error) {
-        setAuthError(error.message);
-      } else {
-        setRegisterStep('code');
-      }
-    } catch (e: any) {
-      setAuthError('Ошибка регистрации');
-    } finally {
-      setIsLoadingAuth(false);
-    }
-  };
-
-  const handleVerifyRegisterCode = async () => {
-    if (!verificationCode.trim() || verificationCode.trim().length < 6) {
-      setAuthError('Введите код из письма');
-      return;
-    }
-    setAuthError('');
-    setIsLoadingAuth(true);
-
-    try {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email: emailInput.trim(),
-        token: verificationCode.trim(),
-        type: 'signup',
-      });
-
-      if (error) {
-        setAuthError('Неверный или истекший код');
-      } else if (data.session) {
-        setShowAuthModal(false);
-      }
-    } catch (e: any) {
-      setAuthError('Ошибка проверки кода');
-    } finally {
-      setIsLoadingAuth(false);
-    }
-  };
-
-  const handleLoginSubmit = async () => {
-    if (!emailInput.trim() || !emailInput.includes('@')) {
-      setAuthError('Введите корректный email адрес');
-      return;
-    }
-    if (!passwordInput.trim()) {
-      setAuthError('Введите пароль');
-      return;
-    }
-    setAuthError('');
-    setIsLoadingAuth(true);
-
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: emailInput.trim(),
-        password: passwordInput.trim(),
-      });
-
-      if (error) {
-        setAuthError('Неверный email или пароль');
-      } else {
-        setShowAuthModal(false);
-      }
-    } catch (e: any) {
-      setAuthError('Ошибка входа');
-    } finally {
-      setIsLoadingAuth(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    setShowProfileMenu(false);
-    await supabase.auth.signOut();
-    setUserProfile({
-      isLoggedIn: false,
-      name: 'Гость',
-      phoneOrEmail: '',
-      avatarUrl: DEFAULT_AVATAR,
-    });
   };
 
   const loadCloudTracks = async () => {
@@ -666,7 +596,7 @@ export default function CatalogScreen() {
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={{ fontSize: 26, fontWeight: '900', color: '#000000', letterSpacing: -0.5 }}>Ритм<Text style={{ color: '#fa233b' }}>.</Text></Text>
 
-              {/* Кнопка Загрузить в боковом меню теперь доступна ВСЕМ */}
+              {/* Кнопка Загрузить в боковом меню доступна ВСЕМ */}
               <Pressable
                 onPress={() => router.push('/upload')}
                 style={{
@@ -783,7 +713,11 @@ export default function CatalogScreen() {
                 </Pressable>
 
                 <Pressable 
-                  onPress={handleSignOut} 
+                  onPress={async () => {
+                    setShowProfileMenu(false);
+                    await supabase.auth.signOut();
+                    setUserProfile({ isLoggedIn: false, name: 'Гость', phoneOrEmail: '', avatarUrl: DEFAULT_AVATAR });
+                  }} 
                   style={({ pressed }) => ({ 
                     flexDirection: 'row', 
                     alignItems: 'center', 
@@ -839,7 +773,6 @@ export default function CatalogScreen() {
               {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'my_music' ? 'Моя музыка' : 'Мои плейлисты'}
             </Text>
 
-            {/* Главная кнопка Загрузить теперь доступна ВСЕМ пользователям */}
             <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
               <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
             </Pressable>
@@ -956,7 +889,7 @@ export default function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'network' }); }} style={{ padding: 6 }}>
+                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'network' }); }} style={{ padding: 10, zIndex: 10 }}>
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                     </Pressable>
                   </View>
@@ -986,7 +919,7 @@ export default function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 6 }}>
+                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10 }}>
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                     </Pressable>
                   </View>
@@ -1019,7 +952,7 @@ export default function CatalogScreen() {
                         </View>
                       </Pressable>
                       <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                      <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'my_music' }); }} style={{ padding: 6 }}>
+                      <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'my_music' }); }} style={{ padding: 10, zIndex: 10 }}>
                         <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                       </Pressable>
                     </View>
@@ -1089,7 +1022,7 @@ export default function CatalogScreen() {
         </View>
       </View>
 
-      {/* НИЖНИЙ ПЛЕЕР С ИЗЯЩНЫМ ПОЛЗУНКОМ */}
+      {/* НИЖНИЙ ПЛЕЕР */}
       <View style={{
         position: 'absolute',
         bottom: 20,
@@ -1108,7 +1041,6 @@ export default function CatalogScreen() {
         boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)' as any,
         zIndex: 100
       }}>
-        
         <View style={{ position: 'absolute', top: 8, left: 24, right: 24, height: 12, zIndex: 120, justifyContent: 'center' }}>
           <Pressable 
             ref={seekBarContainerRef} 
@@ -1117,31 +1049,11 @@ export default function CatalogScreen() {
           >
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 3.5, backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: 2, position: 'relative' }}>
-              <View style={{ 
-                width: `${progressPercent}%`, 
-                height: '100%', 
-                backgroundColor: '#fa233b',
-                borderRadius: 2,
-                boxShadow: '0 0 8px rgba(250, 35, 59, 0.8)' as any
-              }} />
-              <View style={{
-                position: 'absolute',
-                left: `${Math.min(99, Math.max(0.5, progressPercent))}%`,
-                top: -3.5,
-                width: 11,
-                height: 11,
-                borderRadius: 6,
-                backgroundColor: '#ffffff',
-                borderWidth: 2,
-                borderColor: '#fa233b',
-                transform: [{ translateX: -5.5 }],
-                boxShadow: '0 2px 6px rgba(0,0,0,0.4)' as any
-              }} />
+              <View style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
             </View>
           </Pressable>
         </View>
 
-        {/* ТРЕК + СЕРДЕЧКО */}
         <View style={{ flexDirection: 'row', alignItems: 'center', width: 320, marginTop: 8 }}>
           {m?.currentTrack ? (
             <>
@@ -1152,15 +1064,7 @@ export default function CatalogScreen() {
                   {formatTime(currentTime)} / {formatTime(activeDuration)}
                 </Text>
               </View>
-              <Pressable 
-                onPress={() => toggleAddToMyMusic(m.currentTrack)} 
-                style={({ pressed }) => ({ 
-                  padding: 8, 
-                  borderRadius: 20, 
-                  backgroundColor: pressed ? 'rgba(255, 255, 255, 0.12)' : 'transparent',
-                  transform: [{ scale: pressed ? 0.88 : 1 }]
-                })}
-              >
+              <Pressable onPress={() => toggleAddToMyMusic(m.currentTrack)} style={{ padding: 8 }}>
                 <WebIcon name={isCurrentTrackFavorite ? "heart" : "heart-outline"} size={20} color="#fa233b" />
               </Pressable>
             </>
@@ -1169,205 +1073,186 @@ export default function CatalogScreen() {
           )}
         </View>
 
-        {/* КНОПКИ УПРАВЛЕНИЯ ПЛЕЕРОМ */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}>
-          <Pressable 
-            onPress={() => setIsShuffle(!isShuffle)} 
-            style={({ pressed }) => ({
-              width: 40, 
-              height: 40, 
-              borderRadius: 20, 
-              backgroundColor: isShuffle ? 'rgba(250, 35, 59, 0.28)' : pressed ? 'rgba(255, 255, 255, 0.15)' : 'transparent', 
-              borderWidth: 1,
-              borderColor: isShuffle ? '#fa233b' : 'rgba(255, 255, 255, 0.2)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }]
-            })}
-          >
+          <Pressable onPress={() => setIsShuffle(!isShuffle)} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: isShuffle ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isShuffle ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name="shuffle" size={16} color={isShuffle ? '#fa233b' : '#ffffff'} />
           </Pressable>
-
-          <Pressable 
-            onPress={handlePrevious} 
-            style={({ pressed }) => ({
-              width: 42, 
-              height: 42, 
-              borderRadius: 21, 
-              backgroundColor: pressed ? 'rgba(255, 255, 255, 0.15)' : 'transparent', 
-              borderWidth: 1,
-              borderColor: 'rgba(255, 255, 255, 0.2)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }]
-            })}
-          >
+          <Pressable onPress={handlePrevious} style={{ width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name="play-skip-back" size={18} color="#ffffff" />
           </Pressable>
-
-          <Pressable 
-            onPress={handleTogglePlay} 
-            style={({ pressed }) => ({
-              width: 52, 
-              height: 52, 
-              borderRadius: 26, 
-              backgroundColor: '#fa233b', 
-              borderWidth: 2,
-              borderColor: 'rgba(255, 255, 255, 0.35)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }],
-              boxShadow: '0 4px 18px rgba(250, 35, 59, 0.5)' as any
-            })}
-          >
+          <Pressable onPress={handleTogglePlay} style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: '#fa233b', borderWidth: 2, borderColor: 'rgba(255, 255, 255, 0.35)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name={m?.isPlaying ? "pause" : "play"} size={20} color="#ffffff" />
           </Pressable>
-
-          <Pressable 
-            onPress={handleNext} 
-            style={({ pressed }) => ({
-              width: 42, 
-              height: 42, 
-              borderRadius: 21, 
-              backgroundColor: pressed ? 'rgba(255, 255, 255, 0.15)' : 'transparent', 
-              borderWidth: 1,
-              borderColor: 'rgba(255, 255, 255, 0.2)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }]
-            })}
-          >
+          <Pressable onPress={handleNext} style={{ width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name="play-skip-forward" size={18} color="#ffffff" />
           </Pressable>
-
-          <Pressable 
-            onPress={() => setIsRepeat(!isRepeat)} 
-            style={({ pressed }) => ({
-              width: 40, 
-              height: 40, 
-              borderRadius: 20, 
-              backgroundColor: isRepeat ? 'rgba(250, 35, 59, 0.28)' : pressed ? 'rgba(255, 255, 255, 0.15)' : 'transparent', 
-              borderWidth: 1,
-              borderColor: isRepeat ? '#fa233b' : 'rgba(255, 255, 255, 0.2)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }]
-            })}
-          >
+          <Pressable onPress={() => setIsRepeat(!isRepeat)} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: isRepeat ? 'rgba(250, 35, 59, 0.28)' : 'transparent', borderWidth: 1, borderColor: isRepeat ? '#fa233b' : 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name="repeat" size={16} color={isRepeat ? '#fa233b' : '#ffffff'} />
           </Pressable>
         </View>
 
-        {/* ГРОМКОСТЬ И ЭКВАЛАЙЗЕР */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, width: 260, marginTop: 8 }}>
           <Pressable onPress={handleMuteToggle} style={{ padding: 4 }}>
             <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={18} color="#ffffff" />
           </Pressable>
-
-          <Pressable 
-            ref={volumeBarContainerRef}
-            onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }}
-            style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer' }}
-          >
+          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer' }}>
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: 2 }}>
               <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
             </View>
           </Pressable>
-
-          <Pressable 
-            onPress={() => setShowEqualizerModal(true)} 
-            style={({ pressed }) => ({
-              width: 40, 
-              height: 40, 
-              borderRadius: 20, 
-              backgroundColor: pressed ? 'rgba(255, 255, 255, 0.15)' : 'transparent', 
-              borderWidth: 1,
-              borderColor: 'rgba(255, 255, 255, 0.2)',
-              justifyContent: 'center', 
-              alignItems: 'center',
-              transform: [{ scale: pressed ? 0.88 : 1 }]
-            })}
-          >
+          <Pressable onPress={() => setShowEqualizerModal(true)} style={{ width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' }}>
             <WebIcon name="options-outline" size={16} color="#ffffff" />
           </Pressable>
         </View>
       </View>
 
       {/* МОДАЛЬНЫЕ ОКНА */}
-      {/* (Авторизация, аватарки, плейлисты и эквалайзер остаются без изменений) */}
-      <Modal animationType="fade" transparent visible={showAuthModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 440, backgroundColor: 'rgba(22, 22, 28, 0.65)', borderRadius: 28, padding: 28, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.25)' }}>
+      <Modal animationType="fade" transparent visible={showCreatePlaylistModal}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ width: '100%', maxWidth: 400, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 24, fontWeight: '900', color: '#ffffff' }}>
-                  {registerStep === 'code' ? 'Введите код' : authMode === 'login' ? 'Вход в ' : 'Регистрация в '}
-                  {registerStep !== 'code' && <Text style={{ color: '#fa233b' }}>Ритм</Text>}
-                </Text>
-              </View>
-              <Pressable onPress={() => { setShowAuthModal(false); setAuthError(''); }} style={{ padding: 6, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 16 }}>
-                <WebIcon name="close" size={20} color="#ffffff" />
+              <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff' }}>Новый плейлист</Text>
+              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ padding: 4 }}>
+                <WebIcon name="close" size={20} color="#d1d1d6" />
               </Pressable>
             </View>
-
-            {authError.length > 0 && (
-              <View style={{ backgroundColor: 'rgba(250, 35, 59, 0.2)', borderWidth: 1, borderColor: '#fa233b', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, marginBottom: 16 }}>
-                <Text style={{ color: '#ffffff', fontSize: 13, fontWeight: '700', textAlign: 'center' }}>⚠️ {authError}</Text>
-              </View>
-            )}
-
-            {registerStep === 'code' ? (
-              <>
-                <TextInput 
-                  placeholder="000000" 
-                  placeholderTextColor="#a1a1a6"
-                  keyboardType="number-pad"
-                  maxLength={8}
-                  value={verificationCode}
-                  onChangeText={(val) => { setVerificationCode(val); setAuthError(''); }}
-                  style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 22, fontWeight: '800', textAlign: 'center', letterSpacing: 8, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }}
-                />
-                <Pressable onPress={handleVerifyRegisterCode} disabled={isLoadingAuth} style={{ backgroundColor: '#fa233b', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginBottom: 14 }}>
-                  <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>Подтвердить код</Text>
-                </Pressable>
-              </>
-            ) : (
-              <>
-                {authMode === 'register' && (
-                  <>
-                    <TextInput 
-                      placeholder="Ваше имя пользователя..." 
-                      placeholderTextColor="#a1a1a6"
-                      value={setupName}
-                      onChangeText={setSetupName}
-                      style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 14, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}
-                    />
-                  </>
-                )}
-                <TextInput 
-                  placeholder="email@example.com" 
-                  placeholderTextColor="#a1a1a6"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={emailInput}
-                  onChangeText={(text) => { setEmailInput(text); setAuthError(''); }}
-                  style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 15, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}
-                />
-                <TextInput 
-                  placeholder="Пароль (не менее 6 символов)" 
-                  placeholderTextColor="#a1a1a6"
-                  secureTextEntry
-                  value={passwordInput}
-                  onChangeText={(text) => { setPasswordInput(text); setAuthError(''); }}
-                  style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 15, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}
-                />
-                <Pressable onPress={authMode === 'login' ? handleLoginSubmit : handleRegisterSubmit} disabled={isLoadingAuth} style={{ backgroundColor: '#fa233b', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginBottom: 16 }}>
-                  <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>{authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}</Text>
-                </Pressable>
-              </>
-            )}
+            <TextInput 
+              placeholder="Название плейлиста..." 
+              placeholderTextColor="#8e8e93"
+              value={newPlaylistTitle}
+              onChangeText={setNewPlaylistTitle}
+              style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 16, marginBottom: 20 }}
+            />
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center' }}>
+                <Text style={{ color: '#ffffff', fontWeight: '700' }}>Отмена</Text>
+              </Pressable>
+              <Pressable onPress={handleCreatePlaylist} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#fa233b', alignItems: 'center' }}>
+                <Text style={{ color: '#ffffff', fontWeight: '700' }}>Создать</Text>
+              </Pressable>
+            </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* МОДАЛЬНОЕ ОКНО ПЛЕЙЛИСТА */}
+      <Modal animationType="fade" transparent visible={!!selectedPlaylistModal}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ width: '100%', maxWidth: 560, maxHeight: '80%', backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <Text style={{ fontSize: 22, fontWeight: '800', color: '#ffffff' }}>{selectedPlaylistModal?.title}</Text>
+              <Pressable onPress={() => setSelectedPlaylistModal(null)} style={{ padding: 4 }}>
+                <WebIcon name="close" size={24} color="#d1d1d6" />
+              </Pressable>
+            </View>
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              {selectedPlaylistModal?.tracks.length === 0 ? (
+                <Text style={{ color: '#8e8e93', fontSize: 14, textAlign: 'center', marginVertical: 20 }}>В этом плейлисте пока нет треков.</Text>
+              ) : (
+                selectedPlaylistModal?.tracks.map((track) => (
+                  <Pressable 
+                    key={track.id} 
+                    onPress={() => {
+                      void safePlayTrack(track, selectedPlaylistModal.tracks, selectedPlaylistModal.title);
+                      setSelectedPlaylistModal(null);
+                    }}
+                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 12, marginBottom: 8 }}
+                  >
+                    <TrackCoverImage track={track} style={{ width: 44, height: 44, borderRadius: 8, marginRight: 12 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>{track.title}</Text>
+                    </View>
+                    <WebIcon name="play-circle" size={24} color="#fa233b" />
+                  </Pressable>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* МЕНЮ ТРЕКОВ C ДОБАВЛЕНИЕМ В ПЛЕЙЛИСТЫ */}
+      <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          {selectedTrackMenu && (
+            <View style={{ 
+              width: '100%', 
+              maxWidth: 340, 
+              backgroundColor: 'rgba(60, 60, 70, 0.85)', 
+              backdropFilter: 'blur(30px) saturate(180%)' as any, 
+              borderRadius: 24, 
+              padding: 20, 
+              borderWidth: 1, 
+              borderColor: 'rgba(255, 255, 255, 0.25)',
+              boxShadow: '0 15px 35px rgba(0, 0, 0, 0.3)' as any
+            }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <Text style={{ fontSize: 15, fontWeight: '800', color: '#ffffff', flex: 1 }} numberOfLines={1}>
+                  {selectedTrackMenu.track.title}
+                </Text>
+                <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }}>
+                  <WebIcon name="close" size={20} color="#a1a1a6" />
+                </Pressable>
+              </View>
+
+              <Pressable 
+                onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+              >
+                <WebIcon name="add-outline" size={20} color="#ffffff" />
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>Добавить в плейлист</Text>
+                {userPlaylists.length > 0 && (
+                  <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{showPlaylistSelector ? '▲' : '▼'}</Text>
+                )}
+              </Pressable>
+
+              {showPlaylistSelector && userPlaylists.length > 0 && (
+                <View style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)', borderRadius: 12, padding: 8, marginVertical: 6, gap: 4 }}>
+                  {userPlaylists.map((pl) => (
+                    <Pressable 
+                      key={pl.id} 
+                      onPress={() => handleAddTrackToPlaylist(pl.id, selectedTrackMenu.track)}
+                      style={({ pressed }) => ({
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 8,
+                        backgroundColor: pressed ? 'rgba(250, 35, 59, 0.3)' : 'rgba(255, 255, 255, 0.06)',
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      })}
+                    >
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#ffffff' }} numberOfLines={1}>📚 {pl.title}</Text>
+                      <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{pl.tracks.length} тр.</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              <Pressable 
+                onPress={() => {
+                  toggleAddToMyMusic(selectedTrackMenu.track);
+                  setSelectedTrackMenu(null);
+                }} 
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+              >
+                <WebIcon name="heart-outline" size={20} color="#fa233b" />
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>Добавить в мою музыку</Text>
+              </Pressable>
+
+              <Pressable 
+                onPress={() => {
+                  setHiddenTrackIds(prev => [...prev, selectedTrackMenu.track.id]);
+                  setSelectedTrackMenu(null);
+                }} 
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12 }}
+              >
+                <WebIcon name="eye-off-outline" size={20} color="#a1a1a6" />
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#a1a1a6', marginLeft: 12 }}>Удалить из рекомендуемого</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       </Modal>
     </View>
