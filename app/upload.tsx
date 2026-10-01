@@ -57,6 +57,7 @@ export default function UploadScreen() {
     let successCount = 0;
     const errors: string[] = [];
 
+    // Используем фиксированный идентификатор без вызова несуществующей сессии
     const userId = 'public-user';
 
     for (let i = 0; i < selectedFiles.length; i++) {
@@ -73,14 +74,10 @@ export default function UploadScreen() {
         const fileExt = cleanFileName.split('.').pop() || 'mp3';
         const storagePath = `${userId}/${Date.now()}_${cleanFileName}`;
 
-        // Гарантируем корректный формат полезной нагрузки для веб-среды
         let uploadPayload: any = item.fileObj;
-        if (Platform.OS === 'web') {
-          uploadPayload = item.fileObj;
-        }
 
         // 1. Загрузка файла в Supabase Storage
-        const { data: storageData, error: storageError } = await supabase.storage
+        const { error: storageError } = await supabase.storage
           .from('music-storage')
           .upload(storagePath, uploadPayload, {
             contentType: item.fileObj.type || `audio/${fileExt}`,
@@ -98,7 +95,7 @@ export default function UploadScreen() {
 
         const publicAudioUrl = urlData.publicUrl;
 
-        // Извлекаем название и исполнителя из имени файла (Формат: "Исполнитель - Название.mp3")
+        // Извлекаем название и исполнителя из имени файла
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
         const parts = nameWithoutExt.split(' - ');
         let artist = 'Неизвестный исполнитель';
@@ -118,11 +115,10 @@ export default function UploadScreen() {
             genre: 'Deep House',
             duration: 180,
             audio_url: publicAudioUrl,
-            user_id: session?.user?.id || null
+            user_id: null
           });
 
         if (dbError) {
-          // Если возникла ошибка структуры БД, используем резервный вариант
           await supabase.from('tracks').insert({
             title: title,
             artist: artist,
