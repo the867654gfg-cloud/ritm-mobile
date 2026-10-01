@@ -7,7 +7,80 @@ interface FileToUpload {
   fileObj?: File | any;
   name: string;
   size: number;
-  uri?: string;
+  duration?: number;
+  coverBlob?: Blob | null;
+}
+
+// Функция для чтения ID3-тегов (обложки и длительности) прямо из MP3 в браузере
+async function extractMetadata(file: File): Promise<{ duration: number; coverBlob: Blob | null }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement('audio');
+    audio.src = url;
+    audio.preload = 'metadata';
+
+    audio.onloadedmetadata = async () => {
+      const duration = audio.duration && !isNaN(audio.duration) ? audio.duration : 180;
+      URL.revokeObjectURL(url);
+
+      // Пробуем извлечь картинку через jsmediatags или чтение ArrayBuffer
+      try {
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          try {
+            const buffer = e.target?.result as ArrayBuffer;
+            if (!buffer) {
+              resolve({ duration, coverBlob: null });
+              return;
+            }
+            // Простейший поиск тега APIC / Cover в ID3v2
+            const view = new DataView(buffer);
+            let offset = 0;
+            // Проверка заголовка ID3
+            if (view.getUint8(0) === 0x49 && view.getUint8(1) === 0x44 && view.getUint8(2) === 0x33) {
+              // Проходим по байтам в поисках изображений (image/jpeg или image/png)
+              const bytes = new Uint8Array(buffer);
+              let foundIndex = -1;
+              let mimeType = 'image/jpeg';
+
+              for (let i = 0; i < bytes.length - 10; i++) {
+                if (
+                  (bytes[i] === 0xff && bytes[i + 1] === 0xd8) || // JPEG SOF
+                  (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x47) // PNG
+                ) {
+                  // Проверяем, не слишком ли рано (ищем примерно в заголовке тегов)
+                  if (i > 0 && i < 50000) {
+                    foundIndex = i;
+                    if (bytes[i] === 0x89) mimeType = 'image/png';
+                    break;
+                  }
+                }
+              }
+
+              if (foundIndex !== -1) {
+                // Вырезаем картинку до конца тегов или разумного размера
+                const imageBytes = bytes.slice(foundIndex, foundIndex + 500000); 
+                const coverBlob = new Blob([imageBytes], { type: mimeType });
+                resolve({ duration, coverBlob });
+                return;
+              }
+            }
+            resolve({ duration, coverBlob: null });
+          } catch (err) {
+            resolve({ duration, coverBlob: null });
+          }
+        };
+        reader.readAsArrayBuffer(file.slice(0, 200000)); // читаем первые 200Кб где обычно лежит обложка
+      } catch (ex) {
+        resolve({ duration, coverBlob: null });
+      }
+    };
+
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ duration: 180, coverBlob: null });
+    };
+  });
 }
 
 export default function UploadScreen() {
@@ -20,7 +93,7 @@ export default function UploadScreen() {
     errors: []
   });
 
-  // Выбор нескольких файлов
+  // Выбор нескольких файлов с предварительным чтением метаданных
   const handlePickFiles = () => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input');
@@ -28,17 +101,20 @@ export default function UploadScreen() {
       input.multiple = true;
       input.accept = 'audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg';
       
-      input.onchange = (e: any) => {
+      input.onchange = async (e: any) => {
         const files: FileList = e.target.files;
         if (!files || files.length === 0) return;
 
         const newFiles: FileToUpload[] = [];
         for (let i = 0; i < files.length; i++) {
           const f = files[i];
+          const meta = await extractMetadata(f);
           newFiles.push({
             fileObj: f,
             name: f.name,
-            size: f.size
+            size: f.size,
+            duration: meta.duration,
+            coverBlob: meta.coverBlob
           });
         }
         setSelectedFiles(prev => [...prev, ...newFiles]);
@@ -56,7 +132,6 @@ export default function UploadScreen() {
 
     let successCount = 0;
     const errors: string[] = [];
-
     const userId = 'public-user';
 
     for (let i = 0; i < selectedFiles.length; i++) {
@@ -73,43 +148,57 @@ export default function UploadScreen() {
         const timestamp = Date.now();
         const storagePath = `${userId}/${timestamp}_${cleanFileName}`;
 
-        let uploadPayload: any = item.fileObj;
-
-        // 1. Загрузка файла в Supabase Storage
+        // 1. Загрузка аудиофайла в Supabase Storage
         const { error: storageError } = await supabase.storage
           .from('music-storage')
-          .upload(storagePath, uploadPayload, {
+          .upload(storagePath, item.fileObj, {
             contentType: item.fileObj.type || `audio/${fileExt}`,
             upsert: true
           });
 
-        if (storageError) {
-          throw storageError;
-        }
+        if (storageError) throw storageError;
 
-        // 2. Получение публичного URL
         const { data: urlData } = supabase.storage
           .from('music-storage')
           .getPublicUrl(storagePath);
-
         const publicAudioUrl = urlData.publicUrl;
+
+        // 2. Если у файла есть встроенная обложка, загружаем её тоже в Supabase Storage
+        let publicCoverUrl = '';
+        if (item.coverBlob) {
+          const coverPath = `${userId}/${timestamp}_cover.jpg`;
+          const { error: coverStorageError } = await supabase.storage
+            .from('music-storage')
+            .upload(coverPath, item.coverBlob, {
+              contentType: 'image/jpeg',
+              upsert: true
+            });
+
+          if (!coverStorageError) {
+            const { data: coverUrlData } = supabase.storage
+              .from('music-storage')
+              .getPublicUrl(coverPath);
+            publicCoverUrl = coverUrlData.publicUrl;
+          }
+        }
 
         // Извлекаем название трека из имени файла
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
         const title = nameWithoutExt.trim();
 
-        // 3. Запись метаданных трека в БД Supabase с генерацией обязательного id
+        // 3. Запись метаданных трека в БД Supabase (включая обложку и реальную длительность)
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
             id: String(timestamp),
             title: title,
             audio_url: publicAudioUrl,
+            cover_key: publicCoverUrl || null,
+            duration: item.duration || 180,
+            genre: 'Deep House'
           });
 
-        if (dbError) {
-          throw dbError;
-        }
+        if (dbError) throw dbError;
 
         successCount++;
       } catch (err: any) {
@@ -154,7 +243,7 @@ export default function UploadScreen() {
       >
         <Text style={{ fontSize: 40, marginBottom: 12 }}>🎵</Text>
         <Text style={{ fontSize: 18, fontWeight: '800', color: '#ffffff', marginBottom: 6 }}>Выберите аудиофайлы</Text>
-        <Text style={{ fontSize: 13, color: '#8e8e93', textAlign: 'center' }}>Поддерживаются MP3, WAV, FLAC, M4A</Text>
+        <Text style={{ fontSize: 13, color: '#8e8e93', textAlign: 'center' }}>Поддерживаются MP3 с обложками, WAV, FLAC, M4A</Text>
       </Pressable>
 
       {/* Список выбранных файлов */}
@@ -174,10 +263,12 @@ export default function UploadScreen() {
           <ScrollView style={{ flex: 1 }}>
             {selectedFiles.map((file, idx) => (
               <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 12, borderRadius: 12, marginBottom: 8 }}>
-                <Text style={{ fontSize: 18, marginRight: 12 }}>🎶</Text>
+                <Text style={{ fontSize: 18, marginRight: 12 }}>{file.coverBlob ? '🖼️' : '🎶'}</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{file.name}</Text>
-                  <Text style={{ color: '#8e8e93', fontSize: 11, marginTop: 2 }}>{(file.size / (1024 * 1024)).toFixed(2)} MB</Text>
+                  <Text style={{ color: '#8e8e93', fontSize: 11, marginTop: 2 }}>
+                    {(file.size / (1024 * 1024)).toFixed(2)} MB • {file.coverBlob ? 'Обложка найдена ✓' : 'Без обложки'}
+                  </Text>
                 </View>
               </View>
             ))}
