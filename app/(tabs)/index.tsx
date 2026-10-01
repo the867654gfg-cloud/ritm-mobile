@@ -77,10 +77,12 @@ function TrackCoverImage({ track, style }: { track: Track | null; style: any }) 
     setHasError(false);
     if (track && track.cover_url && typeof track.cover_url === 'string' && track.cover_url.trim().startsWith('http')) {
       setCoverUri(track.cover_url.trim());
+    } else if (track && (track as any).cover_key && typeof (track as any).cover_key === 'string' && (track as any).cover_key.trim().startsWith('http')) {
+      setCoverUri((track as any).cover_key.trim());
     } else {
       setCoverUri(null);
     }
-  }, [track?.id, track?.cover_url]);
+  }, [track?.id, track?.cover_url, (track as any)?.cover_key]);
 
   if (!coverUri || hasError) {
     return (
@@ -257,15 +259,31 @@ export default function CatalogScreen() {
         .order('id', { ascending: false });
 
       if (data) {
-        const mapped: Track[] = data.map((item: any) => ({
-          id: String(item.id),
-          title: item.title || 'Без названия',
-          artist: item.artist || '',
-          genre: item.genre || 'Deep House',
-          duration: item.duration || 180,
-          url: item.audio_url || item.url || '',
-          cover_url: (item.cover_key && item.cover_key.startsWith('http')) ? item.cover_key : (item.cover_url || ''),
-        }));
+        const mapped: Track[] = data.map((item: any) => {
+          let resolvedCover = '';
+          if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
+            resolvedCover = item.cover_key.trim();
+          } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
+            resolvedCover = item.cover_url.trim();
+          } else if (item.cover_key) {
+            const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
+            const cleanKey = item.cover_key.replace(/^\/+/, '');
+            resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
+          }
+
+          let dur = Number(item.duration);
+          if (!dur || isNaN(dur) || dur <= 5) dur = 180;
+
+          return {
+            id: String(item.id),
+            title: item.title || 'Без названия',
+            artist: item.artist || '',
+            genre: item.genre || 'Deep House',
+            duration: dur,
+            url: item.audio_url || item.url || '',
+            cover_url: resolvedCover,
+          };
+        });
         setCloudUploadedTracks(mapped);
       }
     } catch (e) {}
@@ -284,15 +302,27 @@ export default function CatalogScreen() {
       
       const { data: cloudData } = await dbQuery.limit(50);
       if (cloudData) {
-        aggregated.push(...cloudData.map((item: any) => ({
-          id: String(item.id),
-          title: item.title,
-          artist: item.artist || '',
-          genre: item.genre || 'Cloud',
-          duration: item.duration || 180,
-          url: item.audio_url || item.url || '',
-          cover_url: (item.cover_key && item.cover_key.startsWith('http')) ? item.cover_key : (item.cover_url || ''),
-        })));
+        aggregated.push(...cloudData.map((item: any) => {
+          let resolvedCover = '';
+          if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
+            resolvedCover = item.cover_key.trim();
+          } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
+            resolvedCover = item.cover_url.trim();
+          } else if (item.cover_key) {
+            const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
+            const cleanKey = item.cover_key.replace(/^\/+/, '');
+            resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
+          }
+          return {
+            id: String(item.id),
+            title: item.title,
+            artist: item.artist || '',
+            genre: item.genre || 'Cloud',
+            duration: Number(item.duration) > 5 ? Number(item.duration) : 180,
+            url: item.audio_url || item.url || '',
+            cover_url: resolvedCover,
+          };
+        }));
       }
 
       const host = AUDIUS_HOSTS[0];
@@ -356,7 +386,13 @@ export default function CatalogScreen() {
         } 
       };
       const updateDuration = () => { 
-        if (audio.duration && !isNaN(audio.duration)) setTrackDuration(audio.duration); 
+        if (audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
+          setTrackDuration(audio.duration);
+          // Автоматически обновляем длительность текущего трека в стейте, если она была дефолтной
+          if (m?.currentTrack && (!m.currentTrack.duration || m.currentTrack.duration === 180)) {
+            m.currentTrack.duration = audio.duration;
+          }
+        } 
       };
 
       audio.addEventListener('timeupdate', updateTime);
@@ -368,7 +404,7 @@ export default function CatalogScreen() {
         audio.removeEventListener('ended', handleNext);
       };
     }
-  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration]);
+  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration, m?.currentTrack]);
 
   const updateSeekPosition = (clientX: number) => {
     const activeDuration = m?.currentTrack?.duration || trackDuration || 0;
@@ -428,7 +464,6 @@ export default function CatalogScreen() {
     if (queueList && queueList.length > 0) setCurrentQueue(queueList);
     else setCurrentQueue(globalSearchResults);
 
-    // Добавляем в недавно прослушиваемые
     setRecentlyPlayed(prev => {
       const filtered = prev.filter(t => t.id !== track.id);
       return [track, ...filtered].slice(0, 30);
@@ -601,15 +636,15 @@ export default function CatalogScreen() {
 
             {!userProfile?.isLoggedIn ? (
               <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
-                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center' }}>
+                <Pressable onPress={() => {}} style={({ pressed }) => ({ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any })}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b' }}>Вход</Text>
                 </Pressable>
-                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center' }}>
+                <Pressable onPress={() => {}} style={({ pressed }) => ({ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any })}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#ffffff' }}>Регистрация</Text>
                 </Pressable>
               </View>
             ) : (
-              <Pressable onPress={() => setShowProfileMenu(!showProfileMenu)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}>
+              <Pressable onPress={() => setShowProfileMenu(!showProfileMenu)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, outlineStyle: 'none' as any }}>
                 <Image source={{ uri: userProfile.avatarUrl }} style={{ width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: '#fa233b' }} />
                 <View style={{ flex: 1 }}>
                   <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '800', color: '#000000' }}>{userProfile.name}</Text>
@@ -640,7 +675,8 @@ export default function CatalogScreen() {
                     shadowOffset: { width: 0, height: 2 },
                     shadowOpacity: 0.08,
                     shadowRadius: 4,
-                    elevation: isActive ? 2 : 0
+                    elevation: isActive ? 2 : 0,
+                    outlineStyle: 'none' as any
                   }}
                 >
                   <Text style={{ fontSize: 14, fontWeight: isActive ? '700' : '500', color: isActive ? '#fa233b' : '#1c1c1e' }}>{tab.label}</Text>
@@ -669,7 +705,8 @@ export default function CatalogScreen() {
                   shadowOffset: { width: 0, height: 4 },
                   shadowOpacity: 0.3,
                   shadowRadius: 6,
-                  elevation: 3
+                  elevation: 3,
+                  outlineStyle: 'none' as any
                 }}
               >
                 <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
@@ -689,7 +726,7 @@ export default function CatalogScreen() {
                   style={{ flex: 1, fontSize: 15, color: '#000000', outlineStyle: 'none' as any }}
                 />
                 {searchQuery.length > 0 && (
-                  <Pressable onPress={() => setSearchQuery('')} style={{ padding: 4 }}>
+                  <Pressable onPress={() => setSearchQuery('')} style={{ padding: 4, outlineStyle: 'none' as any }}>
                     <WebIcon name="close-circle" size={18} color="#8e8e93" />
                   </Pressable>
                 )}
@@ -714,7 +751,8 @@ export default function CatalogScreen() {
                         shadowOffset: { width: 0, height: 2 },
                         shadowOpacity: isSelected ? 0.3 : 0.05,
                         shadowRadius: 4,
-                        elevation: 2
+                        elevation: 2,
+                        outlineStyle: 'none' as any
                       }}
                     >
                       <Text style={{ fontSize: 13, fontWeight: '700', color: isSelected ? '#ffffff' : '#1c1c1e' }}>{g}</Text>
@@ -744,7 +782,8 @@ export default function CatalogScreen() {
                         shadowOffset: { width: 0, height: 4 },
                         shadowOpacity: 0.06,
                         shadowRadius: 8,
-                        elevation: 3
+                        elevation: 3,
+                        outlineStyle: 'none' as any
                       })}
                     >
                       <View style={{ width: '100%', height: 126, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 10, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
@@ -785,7 +824,7 @@ export default function CatalogScreen() {
                       elevation: 1
                     }}
                   >
-                    <Pressable onPress={() => void safePlayTrack(item, globalSearchResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                    <Pressable onPress={() => void safePlayTrack(item, globalSearchResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
@@ -802,7 +841,8 @@ export default function CatalogScreen() {
                         shadowOffset: { width: 0, height: 1 },
                         shadowOpacity: 0.1,
                         shadowRadius: 2,
-                        elevation: 1
+                        elevation: 1,
+                        outlineStyle: 'none' as any
                       }}
                     >
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
@@ -824,7 +864,7 @@ export default function CatalogScreen() {
                 const isSelected = m?.currentTrack?.id === item.id;
                 return (
                   <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
-                    <Pressable onPress={() => void safePlayTrack(item, cloudUploadedTracks, 'Загруженные')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                    <Pressable onPress={() => void safePlayTrack(item, cloudUploadedTracks, 'Загруженные')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
@@ -834,7 +874,7 @@ export default function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10 }}>
+                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10, outlineStyle: 'none' as any }}>
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                     </Pressable>
                   </View>
@@ -871,7 +911,8 @@ export default function CatalogScreen() {
                     shadowOffset: { width: 0, height: 4 },
                     shadowOpacity: 0.05,
                     shadowRadius: 6,
-                    elevation: 2
+                    elevation: 2,
+                    outlineStyle: 'none' as any
                   })}
                 >
                   <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(250, 35, 59, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 10 }}>
@@ -896,7 +937,8 @@ export default function CatalogScreen() {
                       shadowOffset: { width: 0, height: 4 },
                       shadowOpacity: 0.06,
                       shadowRadius: 8,
-                      elevation: 3
+                      elevation: 3,
+                      outlineStyle: 'none' as any
                     })}
                   >
                     <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
@@ -922,14 +964,14 @@ export default function CatalogScreen() {
                   const isSelected = m?.currentTrack?.id === item.id;
                   return (
                     <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
-                      <Pressable onPress={() => void safePlayTrack(item, myMusicTracks, 'Моя музыка')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                      <Pressable onPress={() => void safePlayTrack(item, myMusicTracks, 'Моя музыка')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                         <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                         <View style={{ flex: 1 }}>
                           <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
                         </View>
                       </Pressable>
                       <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                      <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'my_music' }); }} style={{ padding: 10, zIndex: 10 }}>
+                      <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'my_music' }); }} style={{ padding: 10, zIndex: 10, outlineStyle: 'none' as any }}>
                         <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                       </Pressable>
                     </View>
@@ -941,7 +983,7 @@ export default function CatalogScreen() {
         </View>
       </View>
 
-      {/* НИЖНИЙ ПЛЕЕР (скругление по бокам borderRadius: 42, тени под всеми кнопками) */}
+      {/* НИЖНИЙ ПЛЕЕР */}
       <View style={{
         position: 'absolute',
         bottom: 20,
@@ -965,7 +1007,7 @@ export default function CatalogScreen() {
           <Pressable 
             ref={seekBarContainerRef} 
             onPressIn={(e) => { setIsDraggingSeek(true); updateSeekPosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} 
-            style={{ height: '100%', width: '100%', justifyContent: 'center', cursor: 'pointer' }}
+            style={{ height: '100%', width: '100%', justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}
           >
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: 2, position: 'relative' }}>
@@ -1005,7 +1047,8 @@ export default function CatalogScreen() {
                   shadowOffset: { width: 0, height: 2 },
                   shadowOpacity: 0.4,
                   shadowRadius: 4,
-                  elevation: 2
+                  elevation: 2,
+                  outlineStyle: 'none' as any
                 }}
               >
                 <WebIcon name={isCurrentTrackFavorite ? "heart" : "heart-outline"} size={20} color="#fa233b" />
@@ -1032,7 +1075,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 2 },
               shadowOpacity: 0.2,
               shadowRadius: 4,
-              elevation: 2
+              elevation: 2,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name="shuffle" size={16} color={isShuffle ? '#fa233b' : '#ffffff'} />
@@ -1052,7 +1096,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 2 },
               shadowOpacity: 0.25,
               shadowRadius: 4,
-              elevation: 2
+              elevation: 2,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name="play-skip-back" size={18} color="#ffffff" />
@@ -1074,7 +1119,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 4 },
               shadowOpacity: 0.5,
               shadowRadius: 8,
-              elevation: 4
+              elevation: 4,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name={m?.isPlaying ? "pause" : "play"} size={20} color="#ffffff" />
@@ -1094,7 +1140,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 2 },
               shadowOpacity: 0.25,
               shadowRadius: 4,
-              elevation: 2
+              elevation: 2,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name="play-skip-forward" size={18} color="#ffffff" />
@@ -1115,7 +1162,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 2 },
               shadowOpacity: 0.2,
               shadowRadius: 4,
-              elevation: 2
+              elevation: 2,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name="repeat" size={16} color={isRepeat ? '#fa233b' : '#ffffff'} />
@@ -1123,10 +1171,10 @@ export default function CatalogScreen() {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, width: 240, marginTop: 8 }}>
-          <Pressable onPress={handleMuteToggle} style={{ padding: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 2, elevation: 1 }}>
+          <Pressable onPress={handleMuteToggle} style={{ padding: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 2, elevation: 1, outlineStyle: 'none' as any }}>
             <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={18} color="#ffffff" />
           </Pressable>
-          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer' }}>
+          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}>
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: 2 }}>
               <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
@@ -1146,7 +1194,8 @@ export default function CatalogScreen() {
               shadowOffset: { width: 0, height: 2 },
               shadowOpacity: 0.2,
               shadowRadius: 4,
-              elevation: 2
+              elevation: 2,
+              outlineStyle: 'none' as any
             }}
           >
             <WebIcon name="options-outline" size={16} color="#ffffff" />
@@ -1160,7 +1209,7 @@ export default function CatalogScreen() {
           <View style={{ width: '100%', maxWidth: 400, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff' }}>Новый плейлист</Text>
-              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ padding: 4 }}>
+              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ padding: 4, outlineStyle: 'none' as any }}>
                 <WebIcon name="close" size={20} color="#d1d1d6" />
               </Pressable>
             </View>
@@ -1169,13 +1218,13 @@ export default function CatalogScreen() {
               placeholderTextColor="#8e8e93"
               value={newPlaylistTitle}
               onChangeText={setNewPlaylistTitle}
-              style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 16, marginBottom: 20 }}
+              style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 16, marginBottom: 20, outlineStyle: 'none' as any }}
             />
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center' }}>
+              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', outlineStyle: 'none' as any }}>
                 <Text style={{ color: '#ffffff', fontWeight: '700' }}>Отмена</Text>
               </Pressable>
-              <Pressable onPress={handleCreatePlaylist} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#fa233b', alignItems: 'center' }}>
+              <Pressable onPress={handleCreatePlaylist} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#fa233b', alignItems: 'center', outlineStyle: 'none' as any }}>
                 <Text style={{ color: '#ffffff', fontWeight: '700' }}>Создать</Text>
               </Pressable>
             </View>
@@ -1183,7 +1232,6 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
-      {/* ОКНО СПИСКА ТРЕКОВ ПЛЕЙЛИСТА (Темно-серый цвет + стеклянная прозрачность как у плеера) */}
       <Modal animationType="fade" transparent visible={!!selectedPlaylistModal}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.45)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <View style={{ 
@@ -1200,7 +1248,7 @@ export default function CatalogScreen() {
           }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <Text style={{ fontSize: 22, fontWeight: '800', color: '#ffffff' }}>{selectedPlaylistModal?.title}</Text>
-              <Pressable onPress={() => setSelectedPlaylistModal(null)} style={{ padding: 4 }}>
+              <Pressable onPress={() => setSelectedPlaylistModal(null)} style={{ padding: 4, outlineStyle: 'none' as any }}>
                 <WebIcon name="close" size={24} color="#d1d1d6" />
               </Pressable>
             </View>
@@ -1215,7 +1263,7 @@ export default function CatalogScreen() {
                       void safePlayTrack(track, selectedPlaylistModal.tracks, selectedPlaylistModal.title);
                       setSelectedPlaylistModal(null);
                     }}
-                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 12, marginBottom: 8 }}
+                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 12, marginBottom: 8, outlineStyle: 'none' as any }}
                   >
                     <TrackCoverImage track={track} style={{ width: 44, height: 44, borderRadius: 8, marginRight: 12 }} />
                     <View style={{ flex: 1 }}>
@@ -1248,14 +1296,14 @@ export default function CatalogScreen() {
                 <Text style={{ fontSize: 15, fontWeight: '800', color: '#ffffff', flex: 1 }} numberOfLines={1}>
                   {selectedTrackMenu.track.title}
                 </Text>
-                <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }}>
+                <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }} style={{ outlineStyle: 'none' as any }}>
                   <WebIcon name="close" size={20} color="#a1a1a6" />
                 </Pressable>
               </View>
 
               <Pressable 
                 onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
               >
                 <WebIcon name="add-outline" size={20} color="#ffffff" />
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>Добавить в плейлист</Text>
@@ -1277,7 +1325,8 @@ export default function CatalogScreen() {
                         backgroundColor: pressed ? 'rgba(250, 35, 59, 0.3)' : 'rgba(255, 255, 255, 0.06)',
                         flexDirection: 'row',
                         justifyContent: 'space-between',
-                        alignItems: 'center'
+                        alignItems: 'center',
+                        outlineStyle: 'none' as any
                       })}
                     >
                       <Text style={{ fontSize: 13, fontWeight: '700', color: '#ffffff' }} numberOfLines={1}>📚 {pl.title}</Text>
@@ -1292,7 +1341,7 @@ export default function CatalogScreen() {
                   toggleAddToMyMusic(selectedTrackMenu.track);
                   setSelectedTrackMenu(null);
                 }} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
               >
                 <WebIcon name="heart-outline" size={20} color="#fa233b" />
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>Добавить в мою музыку</Text>
@@ -1301,7 +1350,7 @@ export default function CatalogScreen() {
               {(selectedTrackMenu.source === 'my_music' || selectedTrackMenu.source === 'uploads') && (
                 <Pressable 
                   onPress={() => handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source)} 
-                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
                 >
                   <WebIcon name="trash-outline" size={20} color="#fa233b" />
                   <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>Удалить</Text>
@@ -1313,7 +1362,7 @@ export default function CatalogScreen() {
                   setHiddenTrackIds(prev => [...prev, selectedTrackMenu.track.id]);
                   setSelectedTrackMenu(null);
                 }} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12 }}
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
               >
                 <WebIcon name="eye-off-outline" size={20} color="#a1a1a6" />
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#a1a1a6', marginLeft: 12 }}>Удалить из рекомендуемого</Text>
