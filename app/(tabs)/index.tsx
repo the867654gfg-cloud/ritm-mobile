@@ -54,11 +54,6 @@ const GENRES = [
   'Electronic', 'Lofi', 'Jazz', 'Rap', 'Trap', 'Techno', 'Rock'
 ];
 
-const EQUALIZER_BANDS = [
-  '32 Hz', '64 Hz', '125 Hz', '250 Hz', '500 Hz', '1 kHz', 
-  '2 kHz', '4 kHz', '8 kHz', '12 kHz', '14 kHz', '16 kHz'
-];
-
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop';
 
 const AUDIUS_HOSTS = [
@@ -124,18 +119,6 @@ export default function CatalogScreen() {
     avatarUrl: DEFAULT_AVATAR,
   });
 
-  const [isLoadingAuth, setIsLoadingAuth] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [registerStep, setRegisterStep] = useState<'form' | 'code'>('form');
-  
-  const [emailInput, setEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
-  const [setupName, setSetupName] = useState('');
-  const [setupAvatar, setSetupAvatar] = useState(DEFAULT_AVATAR);
-  const [authError, setAuthError] = useState('');
-
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showEditAvatarModal, setShowEditAvatarModal] = useState(false);
 
@@ -185,10 +168,6 @@ export default function CatalogScreen() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState<string>('Все жанры');
-  
-  const [eqGains, setEqGains] = useState<{ [key: number]: number }>({
-    0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0
-  });
 
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
   const [globalSearchResults, setGlobalSearchResults] = useState<Track[]>([]);
@@ -344,7 +323,7 @@ export default function CatalogScreen() {
     return () => clearTimeout(timer);
   }, [searchQuery, selectedGenre, hiddenTrackIds]);
 
-  // Строгое отслеживание таймера, чтобы не выходить за пределы длительности трека
+  // Строгое ограничение таймера реальной длительностью трека
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (!webAudioRef.current) webAudioRef.current = new Audio();
@@ -354,8 +333,8 @@ export default function CatalogScreen() {
       const updateTime = () => { 
         if (!isDraggingSeek) {
           const dur = audio.duration || trackDuration || 0;
-          if (dur > 0 && audio.currentTime >= dur) {
-            setCurrentTime(dur);
+          if (dur > 0) {
+            setCurrentTime(Math.min(audio.currentTime, dur));
           } else {
             setCurrentTime(audio.currentTime);
           }
@@ -575,7 +554,7 @@ export default function CatalogScreen() {
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
       <View style={{ flex: 1, flexDirection: 'row', overflow: 'hidden' }}>
         
-        {/* ЛЕВОЕ МЕНЮ (без кнопки загрузки) */}
+        {/* ЛЕВОЕ МЕНЮ */}
         <View style={{ 
           width: 250, 
           backgroundColor: '#fafafa', 
@@ -593,40 +572,14 @@ export default function CatalogScreen() {
             {!userProfile?.isLoggedIn ? (
               <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
                 <Pressable 
-                  onPress={() => {
-                    setAuthMode('login');
-                    setRegisterStep('form');
-                    setAuthError('');
-                    setShowAuthModal(true);
-                  }} 
-                  style={({ pressed }) => ({ 
-                    flex: 1,
-                    backgroundColor: pressed ? 'rgba(250, 35, 59, 0.2)' : 'rgba(250, 35, 59, 0.1)', 
-                    paddingVertical: 7, 
-                    borderRadius: 12,
-                    alignItems: 'center',
-                    transform: [{ scale: pressed ? 0.95 : 1 }]
-                  })}
+                  onPress={() => {}} 
+                  style={{ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center' }}
                 >
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b' }}>Вход</Text>
                 </Pressable>
-
                 <Pressable 
-                  onPress={() => {
-                    setAuthMode('register');
-                    setRegisterStep('form');
-                    setAuthError('');
-                    setShowAuthModal(true);
-                  }} 
-                  style={({ pressed }) => ({ 
-                    flex: 1,
-                    backgroundColor: '#fa233b', 
-                    paddingVertical: 7, 
-                    borderRadius: 12,
-                    alignItems: 'center',
-                    transform: [{ scale: pressed ? 0.95 : 1 }],
-                    boxShadow: '0 2px 8px rgba(250, 35, 59, 0.3)' as any
-                  })}
+                  onPress={() => {}} 
+                  style={{ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center' }}
                 >
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#ffffff' }}>Регистрация</Text>
                 </Pressable>
@@ -642,68 +595,6 @@ export default function CatalogScreen() {
                   <Text style={{ fontSize: 10, color: '#8e8e93' }}>Профиль ▼</Text>
                 </View>
               </Pressable>
-            )}
-
-            {showProfileMenu && userProfile?.isLoggedIn && (
-              <View style={{ 
-                position: 'absolute', 
-                top: 55, 
-                left: 0, 
-                width: 190, 
-                backgroundColor: '#ffffff', 
-                borderRadius: 16, 
-                padding: 8, 
-                borderWidth: 1, 
-                borderColor: 'rgba(0,0,0,0.1)', 
-                shadowColor: '#000', 
-                shadowOffset: { width: 0, height: 8 }, 
-                shadowOpacity: 0.15, 
-                shadowRadius: 16, 
-                elevation: 10,
-                zIndex: 100
-              }}>
-                <View style={{ paddingHorizontal: 10, paddingVertical: 8, borderBottomWidth: 1, borderColor: 'rgba(0,0,0,0.06)', marginBottom: 4 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: '#000000' }} numberOfLines={1}>{userProfile.name}</Text>
-                  <Text style={{ fontSize: 11, color: '#8e8e93' }} numberOfLines={1}>{userProfile.phoneOrEmail}</Text>
-                </View>
-
-                <Pressable 
-                  onPress={() => {
-                    setShowProfileMenu(false);
-                    setShowEditAvatarModal(true);
-                  }} 
-                  style={({ pressed }) => ({ 
-                    flexDirection: 'row', 
-                    alignItems: 'center', 
-                    paddingHorizontal: 10, 
-                    paddingVertical: 9, 
-                    borderRadius: 10, 
-                    backgroundColor: pressed ? 'rgba(0,0,0,0.04)' : 'transparent' 
-                  })}
-                >
-                  <WebIcon name="camera" size={16} color="#1c1c1e" />
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#1c1c1e', marginLeft: 10 }}>Сменить аватарку</Text>
-                </Pressable>
-
-                <Pressable 
-                  onPress={async () => {
-                    setShowProfileMenu(false);
-                    await supabase.auth.signOut();
-                    setUserProfile({ isLoggedIn: false, name: 'Гость', phoneOrEmail: '', avatarUrl: DEFAULT_AVATAR });
-                  }} 
-                  style={({ pressed }) => ({ 
-                    flexDirection: 'row', 
-                    alignItems: 'center', 
-                    paddingHorizontal: 10, 
-                    paddingVertical: 9, 
-                    borderRadius: 10, 
-                    backgroundColor: pressed ? 'rgba(250, 35, 59, 0.08)' : 'transparent' 
-                  })}
-                >
-                  <WebIcon name="logout" size={16} color="#fa233b" />
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#fa233b', marginLeft: 10 }}>Выйти с аккаунта</Text>
-                </Pressable>
-              </View>
             )}
           </View>
 
@@ -745,7 +636,6 @@ export default function CatalogScreen() {
               {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : 'Моя музыка'}
             </Text>
 
-            {/* Кнопка загрузки ТОЛЬКО на вкладке Загруженные */}
             {activeTab === 'uploads' && (
               <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
                 <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
@@ -903,11 +793,10 @@ export default function CatalogScreen() {
             </ScrollView>
           )}
 
-          {/* ВКЛАДКА 3: МОЯ МУЗЫКА (включая Плейлисты сверху) */}
+          {/* ВКЛАДКА 3: МОЯ МУЗЫКА */}
           {activeTab === 'my_music' && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               
-              {/* Плейлисты сверху в Моей музыке */}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
                 Мои плейлисты ({userPlaylists.length})
               </Text>
@@ -959,7 +848,6 @@ export default function CatalogScreen() {
                 ))}
               </ScrollView>
 
-              {/* Сохраненные треки со счетчиком */}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
                 Сохраненные треки ({myMusicTracks.length})
               </Text>
@@ -993,7 +881,7 @@ export default function CatalogScreen() {
         </View>
       </View>
 
-      {/* НИЖНИЙ ПЛЕЕР (уменьшен по длине и сильнее закруглен, с яркой точкой на ползунке) */}
+      {/* НИЖНИЙ ПЛЕЕР (100% прозрачность и максимальное скругление borderRadius: 42) */}
       <View style={{
         position: 'absolute',
         bottom: 20,
@@ -1001,9 +889,9 @@ export default function CatalogScreen() {
         width: '65%',
         maxWidth: 780,
         height: 84, 
-        backgroundColor: 'rgba(25, 25, 30, 0.6)', 
+        backgroundColor: 'rgba(25, 25, 30, 0)', 
         backdropFilter: 'blur(35px) saturate(180%)' as any,
-        borderRadius: 32,
+        borderRadius: 42,
         borderWidth: 1, 
         borderColor: 'rgba(255, 255, 255, 0.25)', 
         flexDirection: 'row', 
@@ -1013,7 +901,6 @@ export default function CatalogScreen() {
         boxShadow: '0 12px 35px rgba(0, 0, 0, 0.3)' as any,
         zIndex: 100
       }}>
-        {/* Ползунок с яркой светящейся точкой */}
         <View style={{ position: 'absolute', top: 6, left: 22, right: 22, height: 12, zIndex: 120, justifyContent: 'center' }}>
           <Pressable 
             ref={seekBarContainerRef} 
