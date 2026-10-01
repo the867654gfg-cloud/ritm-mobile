@@ -70,6 +70,36 @@ function formatTime(secs: number): string {
   return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+// Универсальный маппер треков из базы данных Supabase
+function mapCloudTrack(item: any): Track {
+  const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
+  let resolvedCover = '';
+
+  if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
+    resolvedCover = item.cover_key.trim();
+  } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
+    resolvedCover = item.cover_url.trim();
+  } else if (item.cover_key) {
+    const cleanKey = item.cover_key.replace(/^\/+/, '');
+    resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
+  } else if (item.artwork) {
+    resolvedCover = item.artwork;
+  }
+
+  let dur = Number(item.duration);
+  if (!dur || isNaN(dur) || dur <= 5) dur = 180;
+
+  return {
+    id: String(item.id),
+    title: item.title || 'Без названия',
+    artist: item.artist || '',
+    genre: item.genre || 'Deep House',
+    duration: dur,
+    url: item.audio_url || item.url || '',
+    cover_url: resolvedCover,
+  };
+}
+
 function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
   const [coverUri, setCoverUri] = useState<string | null>(null);
   const [hasError, setHasError] = useState(false);
@@ -153,7 +183,10 @@ export default function CatalogScreen() {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('ritm_my_music');
-        if (saved) return JSON.parse(saved);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          return parsed.map((t: any) => mapCloudTrack(t));
+        }
       } catch (e) {}
     }
     return [];
@@ -163,7 +196,10 @@ export default function CatalogScreen() {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('ritm_recently_played');
-        if (saved) return JSON.parse(saved);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          return parsed.map((t: any) => mapCloudTrack(t));
+        }
       } catch (e) {}
     }
     return [];
@@ -272,33 +308,7 @@ export default function CatalogScreen() {
         .order('id', { ascending: false });
 
       if (data) {
-        const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
-        const mapped: Track[] = data.map((item: any) => {
-          let resolvedCover = '';
-          if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
-            resolvedCover = item.cover_key.trim();
-          } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
-            resolvedCover = item.cover_url.trim();
-          } else if (item.cover_key) {
-            const cleanKey = item.cover_key.replace(/^\/+/, '');
-            resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
-          } else if (item.artwork) {
-            resolvedCover = item.artwork;
-          }
-
-          let dur = Number(item.duration);
-          if (!dur || isNaN(dur) || dur <= 5) dur = 180;
-
-          return {
-            id: String(item.id),
-            title: item.title || 'Без названия',
-            artist: item.artist || '',
-            genre: item.genre || 'Deep House',
-            duration: dur,
-            url: item.audio_url || item.url || '',
-            cover_url: resolvedCover,
-          };
-        });
+        const mapped = data.map((item: any) => mapCloudTrack(item));
         setCloudUploadedTracks(mapped);
       }
     } catch (e) {}
@@ -317,29 +327,7 @@ export default function CatalogScreen() {
       
       const { data: cloudData } = await dbQuery.limit(50);
       if (cloudData) {
-        const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
-        aggregated.push(...cloudData.map((item: any) => {
-          let resolvedCover = '';
-          if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
-            resolvedCover = item.cover_key.trim();
-          } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
-            resolvedCover = item.cover_url.trim();
-          } else if (item.cover_key) {
-            const cleanKey = item.cover_key.replace(/^\/+/, '');
-            resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
-          } else if (item.artwork) {
-            resolvedCover = item.artwork;
-          }
-          return {
-            id: String(item.id),
-            title: item.title || 'Без названия',
-            artist: item.artist || '',
-            genre: item.genre || 'Cloud',
-            duration: Number(item.duration) > 5 ? Number(item.duration) : 180,
-            url: item.audio_url || item.url || '',
-            cover_url: resolvedCover,
-          };
-        }));
+        aggregated.push(...cloudData.map((item: any) => mapCloudTrack(item)));
       }
 
       const host = AUDIUS_HOSTS[0];
@@ -603,7 +591,6 @@ export default function CatalogScreen() {
       setMyMusicTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
     } else if (source === 'uploads') {
       try {
-        // Удаляем из базы данных Supabase по списку ID выбранных треков
         await supabase.from('tracks').delete().in('id', selectedTrackIds);
       } catch (e) {}
       setCloudUploadedTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
