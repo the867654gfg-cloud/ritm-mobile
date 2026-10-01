@@ -586,19 +586,26 @@ export default function CatalogScreen() {
     }
   };
 
-  const handleRemoveTrack = (track: Track, source: 'my_music' | 'uploads') => {
+  const handleRemoveTrack = async (track: Track, source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
       setMyMusicTracks(prev => prev.filter(t => t.id !== track.id));
     } else if (source === 'uploads') {
+      try {
+        await supabase.from('tracks').delete().eq('id', track.id);
+      } catch (e) {}
       setCloudUploadedTracks(prev => prev.filter(t => t.id !== track.id));
     }
     setSelectedTrackMenu(null);
   };
 
-  const handleBatchRemove = (source: 'my_music' | 'uploads') => {
+  const handleBatchRemove = async (source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
       setMyMusicTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
     } else if (source === 'uploads') {
+      try {
+        // Удаляем из базы данных Supabase по списку ID выбранных треков
+        await supabase.from('tracks').delete().in('id', selectedTrackIds);
+      } catch (e) {}
       setCloudUploadedTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
     }
     setSelectedTrackIds([]);
@@ -1508,9 +1515,9 @@ export default function CatalogScreen() {
                 <Pressable 
                   onPress={() => {
                     if (selectedTrackIds.length > 1) {
-                      handleBatchRemove(selectedTrackMenu.source);
+                      void handleBatchRemove(selectedTrackMenu.source);
                     } else {
-                      handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
+                      void handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
                     }
                   }} 
                   style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
