@@ -26,7 +26,8 @@ function WebIcon({ name, size = 18, color = '#ffffff' }: { name: string; size?: 
     'trash-outline': 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
     'play-circle': 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z',
     'camera': 'M12 15c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm9-9h-3.17l-1.86-2H8.03L6.17 6H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-9 14c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5 z',
-    'logout': 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z'
+    'logout': 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z',
+    'checkmark': 'M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z'
   };
 
   const path = paths[name];
@@ -159,6 +160,11 @@ export default function CatalogScreen() {
     }
     return [];
   });
+
+  // Множественный выбор треков и сортировка для Загруженных и Моей музыки
+  const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
+  const [uploadsSort, setUploadsSort] = useState<'number' | 'title' | 'duration'>('number');
+  const [myMusicSort, setMyMusicSort] = useState<'number' | 'title' | 'duration'>('number');
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -388,7 +394,6 @@ export default function CatalogScreen() {
       const updateDuration = () => { 
         if (audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
           setTrackDuration(audio.duration);
-          // Автоматически обновляем длительность текущего трека в стейте, если она была дефолтной
           if (m?.currentTrack && (!m.currentTrack.duration || m.currentTrack.duration === 180)) {
             m.currentTrack.duration = audio.duration;
           }
@@ -579,6 +584,73 @@ export default function CatalogScreen() {
     setSelectedTrackMenu(null);
   };
 
+  // Множественное удаление
+  const handleBatchRemove = (source: 'my_music' | 'uploads') => {
+    if (source === 'my_music') {
+      setMyMusicTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
+    } else if (source === 'uploads') {
+      setCloudUploadedTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
+    }
+    setSelectedTrackIds([]);
+    setSelectedTrackMenu(null);
+  };
+
+  // Множественное добавление в Мою музыку
+  const handleBatchAddToMyMusic = () => {
+    const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
+    const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
+    setMyMusicTracks(prev => {
+      const existingIds = new Set(prev.map(t => t.id));
+      const newItems = tracksToAdd.filter(t => !existingIds.has(t.id));
+      return [...newItems, ...prev];
+    });
+    setSelectedTrackIds([]);
+    setSelectedTrackMenu(null);
+  };
+
+  // Множественное добавление в плейлист
+  const handleBatchAddToPlaylist = (playlistId: string) => {
+    const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
+    const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
+    
+    setUserPlaylists(prev => prev.map(pl => {
+      if (pl.id === playlistId) {
+        const existingIds = new Set(pl.tracks.map(t => t.id));
+        const newItems = tracksToAdd.filter(t => !existingIds.has(t.id));
+        return { ...pl, tracks: [...pl.tracks, ...newItems] };
+      }
+      return pl;
+    }));
+    setSelectedTrackIds([]);
+    setSelectedTrackMenu(null);
+    setShowPlaylistSelector(false);
+  };
+
+  const toggleSelectTrack = (id: string) => {
+    setSelectedTrackIds(prev => 
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = (list: Track[]) => {
+    const allIds = list.map(t => t.id);
+    if (selectedTrackIds.length === allIds.length) {
+      setSelectedTrackIds([]);
+    } else {
+      setSelectedTrackIds(allIds);
+    }
+  };
+
+  const sortTracks = (list: Track[], sortType: 'number' | 'title' | 'duration') => {
+    const copy = [...list];
+    if (sortType === 'title') {
+      return copy.sort((a, b) => a.title.localeCompare(b.title));
+    } else if (sortType === 'duration') {
+      return copy.sort((a, b) => (a.duration || 0) - (b.duration || 0));
+    }
+    return copy; // 'number' (без сортировки)
+  };
+
   const handleAddTrackToPlaylist = (playlistId: string, track: Track) => {
     setUserPlaylists(prev => prev.map(pl => {
       if (pl.id === playlistId) {
@@ -636,10 +708,10 @@ export default function CatalogScreen() {
 
             {!userProfile?.isLoggedIn ? (
               <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
-                <Pressable onPress={() => {}} style={({ pressed }) => ({ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any })}>
+                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b' }}>Вход</Text>
                 </Pressable>
-                <Pressable onPress={() => {}} style={({ pressed }) => ({ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any })}>
+                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#ffffff' }}>Регистрация</Text>
                 </Pressable>
               </View>
@@ -665,7 +737,7 @@ export default function CatalogScreen() {
               return (
                 <Pressable 
                   key={tab.id}
-                  onPress={() => setActiveTab(tab.id)} 
+                  onPress={() => { setActiveTab(tab.id); setSelectedTrackIds([]); }} 
                   style={{ 
                     paddingVertical: 11, 
                     paddingHorizontal: 14, 
@@ -713,6 +785,55 @@ export default function CatalogScreen() {
               </Pressable>
             )}
           </View>
+
+          {/* ПАНЕЛЬ СОРТИРОВКИ И МНОЖЕСТВЕННОГО ВЫБОРА ДЛЯ ЗАГРУЖЕННЫХ И МОЕЙ МУЗЫКИ */}
+          {(activeTab === 'uploads' || activeTab === 'my_music') && (
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Pressable 
+                  onPress={() => toggleSelectAll(activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks)}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6, outlineStyle: 'none' as any }}
+                >
+                  <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: selectedTrackIds.length > 0 ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
+                    {selectedTrackIds.length > 0 && <WebIcon name="checkmark" size={12} color="#ffffff" />}
+                  </View>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#1c1c1e' }}>
+                    {selectedTrackIds.length > 0 ? `Выбрано: ${selectedTrackIds.length}` : 'Выбрать все'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={{ fontSize: 12, color: '#8e8e93', fontWeight: '600' }}>Сортировка:</Text>
+                {[
+                  { id: 'number', label: '№' },
+                  { id: 'title', label: 'Название' },
+                  { id: 'duration', label: 'Длительность' },
+                ].map((s) => {
+                  const currentSort = activeTab === 'uploads' ? uploadsSort : myMusicSort;
+                  const isSel = currentSort === s.id;
+                  return (
+                    <Pressable
+                      key={s.id}
+                      onPress={() => {
+                        if (activeTab === 'uploads') setUploadsSort(s.id as any);
+                        else setMyMusicSort(s.id as any);
+                      }}
+                      style={{
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderRadius: 8,
+                        backgroundColor: isSel ? '#fa233b' : 'rgba(0,0,0,0.04)',
+                        outlineStyle: 'none' as any
+                      }}
+                    >
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: isSel ? '#ffffff' : '#1c1c1e' }}>{s.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
 
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
           {activeTab === 'main' && (
@@ -860,10 +981,19 @@ export default function CatalogScreen() {
                 Облачные загрузки Supabase ({cloudUploadedTracks.length})
               </Text>
 
-              {cloudUploadedTracks.map((item) => {
+              {sortTracks(cloudUploadedTracks, uploadsSort).map((item) => {
                 const isSelected = m?.currentTrack?.id === item.id;
+                const isChecked = selectedTrackIds.includes(item.id);
                 return (
                   <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
+                    
+                    {/* Чекбокс множественного выбора */}
+                    <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
+                      <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
+                        {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
+                      </View>
+                    </Pressable>
+
                     <Pressable onPress={() => void safePlayTrack(item, cloudUploadedTracks, 'Загруженные')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                       <View style={{ flex: 1 }}>
@@ -960,10 +1090,19 @@ export default function CatalogScreen() {
                   <Text style={{ color: '#8e8e93', fontSize: 14 }}>В вашей музыке пока нет сохраненных треков.</Text>
                 </View>
               ) : (
-                myMusicTracks.map((item) => {
+                sortTracks(myMusicTracks, myMusicSort).map((item) => {
                   const isSelected = m?.currentTrack?.id === item.id;
+                  const isChecked = selectedTrackIds.includes(item.id);
                   return (
                     <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
+                      
+                      {/* Чекбокс множественного выбора */}
+                      <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
+                        <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
+                          {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
+                        </View>
+                      </Pressable>
+
                       <Pressable onPress={() => void safePlayTrack(item, myMusicTracks, 'Моя музыка')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                         <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
                         <View style={{ flex: 1 }}>
@@ -1278,6 +1417,7 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
+      {/* МЕНЮ ПО ТРОЕТОЧИЮ (ПОДДЕРЖИВАЕТ МАССОВЫЕ ДЕЙСТВИЯ, ЕСЛИ ВЫБРАНО НЕСКОЛЬКО ТРЕКОВ) */}
       <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           {selectedTrackMenu && (
@@ -1294,7 +1434,7 @@ export default function CatalogScreen() {
             }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <Text style={{ fontSize: 15, fontWeight: '800', color: '#ffffff', flex: 1 }} numberOfLines={1}>
-                  {selectedTrackMenu.track.title}
+                  {selectedTrackIds.length > 1 ? `Выбрано треков: ${selectedTrackIds.length}` : selectedTrackMenu.track.title}
                 </Text>
                 <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }} style={{ outlineStyle: 'none' as any }}>
                   <WebIcon name="close" size={20} color="#a1a1a6" />
@@ -1306,7 +1446,9 @@ export default function CatalogScreen() {
                 style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
               >
                 <WebIcon name="add-outline" size={20} color="#ffffff" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>Добавить в плейлист</Text>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>
+                  {selectedTrackIds.length > 1 ? `Добавить выбранные в плейлист` : 'Добавить в плейлист'}
+                </Text>
                 {userPlaylists.length > 0 && (
                   <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{showPlaylistSelector ? '▲' : '▼'}</Text>
                 )}
@@ -1317,7 +1459,13 @@ export default function CatalogScreen() {
                   {userPlaylists.map((pl) => (
                     <Pressable 
                       key={pl.id} 
-                      onPress={() => handleAddTrackToPlaylist(pl.id, selectedTrackMenu.track)}
+                      onPress={() => {
+                        if (selectedTrackIds.length > 1) {
+                          handleBatchAddToPlaylist(pl.id);
+                        } else {
+                          handleAddTrackToPlaylist(pl.id, selectedTrackMenu.track);
+                        }
+                      }}
                       style={({ pressed }) => ({
                         paddingVertical: 8,
                         paddingHorizontal: 12,
@@ -1338,35 +1486,38 @@ export default function CatalogScreen() {
 
               <Pressable 
                 onPress={() => {
-                  toggleAddToMyMusic(selectedTrackMenu.track);
-                  setSelectedTrackMenu(null);
+                  if (selectedTrackIds.length > 1) {
+                    handleBatchAddToMyMusic();
+                  } else {
+                    toggleAddToMyMusic(selectedTrackMenu.track);
+                    setSelectedTrackMenu(null);
+                  }
                 }} 
                 style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
               >
                 <WebIcon name="heart-outline" size={20} color="#fa233b" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>Добавить в мою музыку</Text>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>
+                  {selectedTrackIds.length > 1 ? 'Добавить выбранные в Мою музыку' : 'Добавить в мою музыку'}
+                </Text>
               </Pressable>
 
               {(selectedTrackMenu.source === 'my_music' || selectedTrackMenu.source === 'uploads') && (
                 <Pressable 
-                  onPress={() => handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source)} 
-                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
+                  onPress={() => {
+                    if (selectedTrackIds.length > 1) {
+                      handleBatchRemove(selectedTrackMenu.source);
+                    } else {
+                      handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
+                    }
+                  }} 
+                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
                 >
                   <WebIcon name="trash-outline" size={20} color="#fa233b" />
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>Удалить</Text>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>
+                    {selectedTrackIds.length > 1 ? `Удалить выбранные (${selectedTrackIds.length})` : 'Удалить'}
+                  </Text>
                 </Pressable>
               )}
-
-              <Pressable 
-                onPress={() => {
-                  setHiddenTrackIds(prev => [...prev, selectedTrackMenu.track.id]);
-                  setSelectedTrackMenu(null);
-                }} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
-              >
-                <WebIcon name="eye-off-outline" size={20} color="#a1a1a6" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#a1a1a6', marginLeft: 12 }}>Удалить из рекомендуемого</Text>
-              </Pressable>
             </View>
           )}
         </View>
