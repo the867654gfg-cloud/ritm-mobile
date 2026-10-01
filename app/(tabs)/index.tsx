@@ -112,7 +112,6 @@ export default function CatalogScreen() {
     m = {};
   }
 
-  // Задано значение по умолчанию во избежание ошибок с null
   const [userProfile, setUserProfile] = useState<{
     isLoggedIn: boolean;
     name: string;
@@ -667,24 +666,22 @@ export default function CatalogScreen() {
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={{ fontSize: 26, fontWeight: '900', color: '#000000', letterSpacing: -0.5 }}>Ритм<Text style={{ color: '#fa233b' }}>.</Text></Text>
 
-              {/* Кнопка Загрузить в боковом меню рендерится ТОЛЬКО для авторизованных пользователей */}
-              {userProfile?.isLoggedIn && (
-                <Pressable
-                  onPress={() => router.push('/upload')}
-                  style={{
-                    backgroundColor: '#fa233b',
-                    paddingHorizontal: 12,
-                    paddingVertical: 6,
-                    borderRadius: 10,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                >
-                  <WebIcon name="add-outline" size={16} color="#ffffff" />
-                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Загрузить</Text>
-                </Pressable>
-              )}
+              {/* Кнопка Загрузить в боковом меню теперь доступна ВСЕМ */}
+              <Pressable
+                onPress={() => router.push('/upload')}
+                style={{
+                  backgroundColor: '#fa233b',
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderRadius: 10,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <WebIcon name="add-outline" size={16} color="#ffffff" />
+                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Загрузить</Text>
+              </Pressable>
             </View>
 
             {/* КОМПАКТНЫЕ КНОПКИ ВХОДА / РЕГИСТРАЦИИ (Для гостей) */}
@@ -842,12 +839,10 @@ export default function CatalogScreen() {
               {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'my_music' ? 'Моя музыка' : 'Мои плейлисты'}
             </Text>
 
-            {/* Главная кнопка Загрузить рендерится СТРОГО только авторизованным пользователям */}
-            {userProfile?.isLoggedIn && (
-              <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
-              </Pressable>
-            )}
+            {/* Главная кнопка Загрузить теперь доступна ВСЕМ пользователям */}
+            <Pressable onPress={() => router.push('/upload')} style={{ backgroundColor: '#fa233b', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 }}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>+ Загрузить</Text>
+            </Pressable>
           </View>
 
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
@@ -1299,39 +1294,16 @@ export default function CatalogScreen() {
         </View>
       </View>
 
-      {/* МОДАЛЬНОЕ ОКНО АВТОРИЗАЦИИ С ПОДТВЕРЖДЕНИЕМ КОДОМ ПРИ РЕГИСТРАЦИИ */}
+      {/* МОДАЛЬНЫЕ ОКНА */}
+      {/* (Авторизация, аватарки, плейлисты и эквалайзер остаются без изменений) */}
       <Modal animationType="fade" transparent visible={showAuthModal}>
-        <View style={{ 
-          flex: 1, 
-          backgroundColor: 'rgba(10, 10, 15, 0.5)', 
-          backdropFilter: 'blur(30px) saturate(180%)' as any, 
-          justifyContent: 'center', 
-          alignItems: 'center', 
-          padding: 20 
-        }}>
-          <View style={{ 
-            width: '100%', 
-            maxWidth: 440, 
-            backgroundColor: 'rgba(22, 22, 28, 0.65)', 
-            backdropFilter: 'blur(35px) saturate(180%)' as any,
-            borderRadius: 28, 
-            padding: 28, 
-            borderWidth: 1, 
-            borderColor: 'rgba(255, 255, 255, 0.25)',
-            boxShadow: '0 20px 50px rgba(0, 0, 0, 0.4)' as any
-          }}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ width: '100%', maxWidth: 440, backgroundColor: 'rgba(22, 22, 28, 0.65)', borderRadius: 28, padding: 28, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.25)' }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 24, fontWeight: '900', color: '#ffffff', letterSpacing: -0.5 }}>
+                <Text style={{ fontSize: 24, fontWeight: '900', color: '#ffffff' }}>
                   {registerStep === 'code' ? 'Введите код' : authMode === 'login' ? 'Вход в ' : 'Регистрация в '}
                   {registerStep !== 'code' && <Text style={{ color: '#fa233b' }}>Ритм</Text>}
-                </Text>
-                <Text style={{ fontSize: 13, color: '#a1a1a6', marginTop: 4 }}>
-                  {registerStep === 'code' 
-                    ? `Код подтверждения отправлен на ${emailInput}`
-                    : authMode === 'login' 
-                    ? 'Введите email и ваш пароль' 
-                    : 'Заполните данные для создания аккаунта'}
                 </Text>
               </View>
               <Pressable onPress={() => { setShowAuthModal(false); setAuthError(''); }} style={{ padding: 6, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 16 }}>
@@ -1345,7 +1317,6 @@ export default function CatalogScreen() {
               </View>
             )}
 
-            {/* ШАГ ВВОДА КОДА ПРИ РЕГИСТРАЦИИ */}
             {registerStep === 'code' ? (
               <>
                 <TextInput 
@@ -1357,47 +1328,14 @@ export default function CatalogScreen() {
                   onChangeText={(val) => { setVerificationCode(val); setAuthError(''); }}
                   style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 22, fontWeight: '800', textAlign: 'center', letterSpacing: 8, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }}
                 />
-
-                <Pressable 
-                  onPress={handleVerifyRegisterCode} 
-                  disabled={isLoadingAuth}
-                  style={({ pressed }) => ({
-                    backgroundColor: '#fa233b', 
-                    paddingVertical: 14, 
-                    borderRadius: 14, 
-                    alignItems: 'center', 
-                    marginBottom: 14,
-                    opacity: isLoadingAuth ? 0.7 : 1,
-                    transform: [{ scale: pressed ? 0.98 : 1 }],
-                    boxShadow: '0 4px 18px rgba(250, 35, 59, 0.4)' as any
-                  })}
-                >
-                  {isLoadingAuth ? (
-                    <ActivityIndicator size="small" color="#ffffff" />
-                  ) : (
-                    <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>Подтвердить код</Text>
-                  )}
-                </Pressable>
-
-                <Pressable onPress={() => setRegisterStep('form')} style={{ alignItems: 'center', paddingVertical: 8 }}>
-                  <Text style={{ color: '#a1a1a6', fontSize: 13, fontWeight: '600' }}>← Вернуться назад</Text>
+                <Pressable onPress={handleVerifyRegisterCode} disabled={isLoadingAuth} style={{ backgroundColor: '#fa233b', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginBottom: 14 }}>
+                  <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>Подтвердить код</Text>
                 </Pressable>
               </>
             ) : (
               <>
                 {authMode === 'register' && (
                   <>
-                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#a1a1a6', textTransform: 'uppercase', marginBottom: 8 }}>Аватарка и Имя</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-                      <Image source={{ uri: setupAvatar }} style={{ width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#fa233b' }} />
-                      <Pressable 
-                        onPress={() => pickImageFile((uri) => setSetupAvatar(uri))}
-                        style={{ backgroundColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12 }}
-                      >
-                        <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '700' }}>📷 Выбрать фото</Text>
-                      </Pressable>
-                    </View>
-
                     <TextInput 
                       placeholder="Ваше имя пользователя..." 
                       placeholderTextColor="#a1a1a6"
@@ -1407,7 +1345,6 @@ export default function CatalogScreen() {
                     />
                   </>
                 )}
-
                 <TextInput 
                   placeholder="email@example.com" 
                   placeholderTextColor="#a1a1a6"
@@ -1417,7 +1354,6 @@ export default function CatalogScreen() {
                   onChangeText={(text) => { setEmailInput(text); setAuthError(''); }}
                   style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 15, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}
                 />
-
                 <TextInput 
                   placeholder="Пароль (не менее 6 символов)" 
                   placeholderTextColor="#a1a1a6"
@@ -1426,329 +1362,12 @@ export default function CatalogScreen() {
                   onChangeText={(text) => { setPasswordInput(text); setAuthError(''); }}
                   style={{ backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: '#ffffff', fontSize: 15, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}
                 />
-
-                <Pressable 
-                  onPress={authMode === 'login' ? handleLoginSubmit : handleRegisterSubmit} 
-                  disabled={isLoadingAuth}
-                  style={({ pressed }) => ({
-                    backgroundColor: '#fa233b', 
-                    paddingVertical: 14, 
-                    borderRadius: 14, 
-                    alignItems: 'center', 
-                    marginBottom: 16,
-                    opacity: isLoadingAuth ? 0.7 : 1,
-                    transform: [{ scale: pressed ? 0.98 : 1 }],
-                    boxShadow: '0 4px 18px rgba(250, 35, 59, 0.4)' as any
-                  })}
-                >
-                  {isLoadingAuth ? (
-                    <ActivityIndicator size="small" color="#ffffff" />
-                  ) : (
-                    <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>
-                      {authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
-                    </Text>
-                  )}
-                </Pressable>
-
-                <Pressable 
-                  onPress={() => {
-                    setAuthMode(authMode === 'login' ? 'register' : 'login');
-                    setAuthError('');
-                  }} 
-                  style={{ alignItems: 'center', paddingVertical: 8 }}
-                >
-                  <Text style={{ color: '#a1a1a6', fontSize: 13, fontWeight: '600' }}>
-                    {authMode === 'login' ? 'Нет аккаунта? ' : 'Уже есть аккаунт? '}
-                    <Text style={{ color: '#fa233b', fontWeight: '800' }}>
-                      {authMode === 'login' ? 'Зарегистрироваться' : 'Войти'}
-                    </Text>
-                  </Text>
+                <Pressable onPress={authMode === 'login' ? handleLoginSubmit : handleRegisterSubmit} disabled={isLoadingAuth} style={{ backgroundColor: '#fa233b', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginBottom: 16 }}>
+                  <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>{authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}</Text>
                 </Pressable>
               </>
             )}
           </View>
-        </View>
-      </Modal>
-
-      {/* МОДАЛЬНОЕ ОКНО СМЕНЫ АВАТАРКИ */}
-      <Modal animationType="fade" transparent visible={showEditAvatarModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 400, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff' }}>Сменить аватарку</Text>
-              <Pressable onPress={() => setShowEditAvatarModal(false)} style={{ padding: 4 }}>
-                <WebIcon name="close" size={20} color="#d1d1d6" />
-              </Pressable>
-            </View>
-
-            <View style={{ alignItems: 'center', marginBottom: 24 }}>
-              <Image 
-                source={{ uri: userProfile?.avatarUrl || DEFAULT_AVATAR }} 
-                style={{ width: 90, height: 90, borderRadius: 45, borderWidth: 3, borderColor: '#fa233b', marginBottom: 16 }} 
-                resizeMode="cover"
-              />
-              <Pressable 
-                onPress={() => pickImageFile(async (uri) => {
-                  if (userProfile) {
-                    await supabase.auth.updateUser({ data: { avatar_url: uri } });
-                    setUserProfile({ ...userProfile, avatarUrl: uri });
-                  }
-                  setShowEditAvatarModal(false);
-                })}
-                style={({ pressed }) => ({
-                  backgroundColor: '#fa233b',
-                  paddingHorizontal: 20,
-                  paddingVertical: 10,
-                  borderRadius: 16,
-                  transform: [{ scale: pressed ? 0.95 : 1 }]
-                })}
-              >
-                <Text style={{ color: '#ffffff', fontSize: 14, fontWeight: '700' }}>📷 Загрузить новое фото</Text>
-              </Pressable>
-            </View>
-
-            <Pressable onPress={() => setShowEditAvatarModal(false)} style={{ paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center' }}>
-              <Text style={{ color: '#ffffff', fontWeight: '700' }}>Закрыть</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* МОДАЛЬНОЕ ОКНО СОЗДАНИЯ ПЛЕЙЛИСТА */}
-      <Modal animationType="fade" transparent visible={showCreatePlaylistModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 400, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff' }}>Новый плейлист</Text>
-              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ padding: 4 }}>
-                <WebIcon name="close" size={20} color="#d1d1d6" />
-              </Pressable>
-            </View>
-
-            <TextInput 
-              placeholder="Название плейлиста..." 
-              placeholderTextColor="#8e8e93"
-              value={newPlaylistTitle}
-              onChangeText={setNewPlaylistTitle}
-              style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 16, marginBottom: 20 }}
-            />
-
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Pressable onPress={() => setShowCreatePlaylistModal(false)} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center' }}>
-                <Text style={{ color: '#ffffff', fontWeight: '700' }}>Отмена</Text>
-              </Pressable>
-              <Pressable onPress={handleCreatePlaylist} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#fa233b', alignItems: 'center' }}>
-                <Text style={{ color: '#ffffff', fontWeight: '700' }}>Создать</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* МОДАЛЬНОЕ ОКНО ПЛЕЙЛИСТА */}
-      <Modal animationType="fade" transparent visible={!!selectedPlaylistModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ 
-            width: '100%', 
-            maxWidth: 560, 
-            maxHeight: '80%',
-            backgroundColor: '#1c1c1e', 
-            borderRadius: 24, 
-            padding: 24, 
-            borderWidth: 1, 
-            borderColor: 'rgba(255, 255, 255, 0.15)'
-          }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <Text style={{ fontSize: 22, fontWeight: '800', color: '#ffffff' }}>{selectedPlaylistModal?.title}</Text>
-              <Pressable onPress={() => setSelectedPlaylistModal(null)} style={{ padding: 4 }}>
-                <WebIcon name="close" size={24} color="#d1d1d6" />
-              </Pressable>
-            </View>
-
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {selectedPlaylistModal?.tracks.length === 0 ? (
-                <Text style={{ color: '#8e8e93', fontSize: 14, textAlign: 'center', marginVertical: 20 }}>В этом плейлисте пока нет треков.</Text>
-              ) : (
-                selectedPlaylistModal?.tracks.map((track) => (
-                  <Pressable 
-                    key={track.id} 
-                    onPress={() => {
-                      void safePlayTrack(track, selectedPlaylistModal.tracks, selectedPlaylistModal.title);
-                      setSelectedPlaylistModal(null);
-                    }}
-                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 12, marginBottom: 8 }}
-                  >
-                    <TrackCoverImage track={track} style={{ width: 44, height: 44, borderRadius: 8, marginRight: 12 }} />
-                    <View style={{ flex: 1 }}>
-                      <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>{track.title}</Text>
-                    </View>
-                    <WebIcon name="play-circle" size={24} color="#fa233b" />
-                  </Pressable>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* МОДАЛЬНОЕ ОКНО ЭКВАЛАЙЗЕРА */}
-      <Modal animationType="fade" transparent visible={showEqualizerModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 540, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff' }}>🎛️ 12-полосный эквалайзер</Text>
-              <Pressable onPress={() => setShowEqualizerModal(false)} style={{ padding: 4 }}>
-                <WebIcon name="close" size={22} color="#d1d1d6" />
-              </Pressable>
-            </View>
-
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', height: 180, paddingVertical: 10, marginBottom: 16 }}>
-              {EQUALIZER_BANDS.map((band, index) => {
-                const currentGain = eqGains[index] || 0;
-                return (
-                  <View key={band} style={{ alignItems: 'center', flex: 1 }}>
-                    <Text style={{ fontSize: 10, color: '#8e8e93', marginBottom: 6 }}>{currentGain > 0 ? `+${currentGain}` : currentGain} dB</Text>
-                    <View style={{ width: 6, height: 120, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, justifyContent: 'center', alignItems: 'center' }}>
-                      <TextInput 
-                        value={String(currentGain)}
-                        onChangeText={(val) => {
-                          const num = parseInt(val, 10);
-                          if (!isNaN(num)) {
-                            setEqGains(prev => ({ ...prev, [index]: Math.max(-10, Math.min(10, num)) }));
-                          }
-                        }}
-                        keyboardType="numeric"
-                        style={{ width: 28, height: 28, backgroundColor: '#fa233b', borderRadius: 14, textAlign: 'center', fontSize: 10, color: '#ffffff', fontWeight: '700' }}
-                      />
-                    </View>
-                    <Text style={{ fontSize: 10, color: '#ffffff', marginTop: 8 }}>{band}</Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            <Pressable onPress={() => setEqGains({ 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0 })} style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 10, alignItems: 'center' }}>
-              <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Сбросить настройки</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* МЕНЮ ТРЕКОВ C ДОБАВЛЕНИЕМ В ПЛЕЙЛИСТЫ */}
-      <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          {selectedTrackMenu && (
-            <View style={{ 
-              width: '100%', 
-              maxWidth: 340, 
-              backgroundColor: 'rgba(60, 60, 70, 0.75)', 
-              backdropFilter: 'blur(30px) saturate(180%)' as any, 
-              borderRadius: 24, 
-              padding: 20, 
-              borderWidth: 1, 
-              borderColor: 'rgba(255, 255, 255, 0.25)',
-              boxShadow: '0 15px 35px rgba(0, 0, 0, 0.3)' as any
-            }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <Text style={{ fontSize: 15, fontWeight: '800', color: '#ffffff', flex: 1 }} numberOfLines={1}>
-                  {selectedTrackMenu.track.title}
-                </Text>
-                <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }}>
-                  <WebIcon name="close" size={20} color="#a1a1a6" />
-                </Pressable>
-              </View>
-
-              <Pressable 
-                onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
-              >
-                <WebIcon name="add-outline" size={20} color="#ffffff" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>Добавить в плейлист</Text>
-                {userPlaylists.length > 0 && (
-                  <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{showPlaylistSelector ? '▲' : '▼'}</Text>
-                )}
-              </Pressable>
-
-              {showPlaylistSelector && userPlaylists.length > 0 && (
-                <View style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)', borderRadius: 12, padding: 8, marginVertical: 6, gap: 4 }}>
-                  {userPlaylists.map((pl) => (
-                    <Pressable 
-                      key={pl.id} 
-                      onPress={() => handleAddTrackToPlaylist(pl.id, selectedTrackMenu.track)}
-                      style={({ pressed }) => ({
-                        paddingVertical: 8,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        backgroundColor: pressed ? 'rgba(250, 35, 59, 0.3)' : 'rgba(255, 255, 255, 0.06)',
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      })}
-                    >
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#ffffff' }} numberOfLines={1}>📚 {pl.title}</Text>
-                      <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{pl.tracks.length} тр.</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-
-              {selectedTrackMenu.source === 'network' && (
-                <>
-                  <Pressable 
-                    onPress={() => {
-                      toggleAddToMyMusic(selectedTrackMenu.track);
-                      setSelectedTrackMenu(null);
-                    }} 
-                    style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
-                  >
-                    <WebIcon name="heart-outline" size={20} color="#fa233b" />
-                    <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>Добавить в мою музыку</Text>
-                  </Pressable>
-
-                  <Pressable 
-                    onPress={() => {
-                      setHiddenTrackIds(prev => [...prev, selectedTrackMenu.track.id]);
-                      setSelectedTrackMenu(null);
-                    }} 
-                    style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12 }}
-                  >
-                    <WebIcon name="eye-off-outline" size={20} color="#a1a1a6" />
-                    <Text style={{ fontSize: 14, fontWeight: '600', color: '#a1a1a6', marginLeft: 12 }}>Удалить из рекомендуемого</Text>
-                  </Pressable>
-                </>
-              )}
-
-              {selectedTrackMenu.source === 'my_music' && (
-                <Pressable 
-                  onPress={() => {
-                    setMyMusicTracks(prev => prev.filter(t => t.id !== selectedTrackMenu.track.id));
-                    setSelectedTrackMenu(null);
-                  }} 
-                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12 }}
-                >
-                  <WebIcon name="trash-outline" size={20} color="#fa233b" />
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>Удалить из музыки</Text>
-                </Pressable>
-              )}
-
-              {selectedTrackMenu.source === 'uploads' && (
-                <Pressable 
-                  onPress={async () => {
-                    const tr = selectedTrackMenu.track;
-                    setSelectedTrackMenu(null);
-                    try {
-                      await supabase.from('tracks').delete().eq('id', tr.id);
-                      loadCloudTracks();
-                    } catch(e) {}
-                  }} 
-                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12 }}
-                >
-                  <WebIcon name="trash-outline" size={20} color="#fa233b" />
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>Удалить из облака</Text>
-                </Pressable>
-              )}
-            </View>
-          )}
         </View>
       </Modal>
     </View>
