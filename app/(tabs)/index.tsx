@@ -76,14 +76,22 @@ function TrackCoverImage({ track, style }: { track: Track | null; style: any }) 
 
   useEffect(() => {
     setHasError(false);
-    if (track && track.cover_url && typeof track.cover_url === 'string' && track.cover_url.trim().startsWith('http')) {
-      setCoverUri(track.cover_url.trim());
-    } else if (track && (track as any).cover_key && typeof (track as any).cover_key === 'string' && (track as any).cover_key.trim().startsWith('http')) {
-      setCoverUri((track as any).cover_key.trim());
-    } else {
-      setCoverUri(null);
+    if (track) {
+      if (track.cover_url && typeof track.cover_url === 'string' && track.cover_url.trim().startsWith('http')) {
+        setCoverUri(track.cover_url.trim());
+        return;
+      }
+      if ((track as any).cover_key && typeof (track as any).cover_key === 'string' && (track as any).cover_key.trim().startsWith('http')) {
+        setCoverUri((track as any).cover_key.trim());
+        return;
+      }
+      if ((track as any).artwork && typeof (track as any).artwork === 'string') {
+        setCoverUri((track as any).artwork);
+        return;
+      }
     }
-  }, [track?.id, track?.cover_url, (track as any)?.cover_key]);
+    setCoverUri(null);
+  }, [track?.id, track?.cover_url, (track as any)?.cover_key, (track as any)?.artwork]);
 
   if (!coverUri || hasError) {
     return (
@@ -161,7 +169,6 @@ export default function CatalogScreen() {
     return [];
   });
 
-  // Множественный выбор треков и сортировка для Загруженных и Моей музыки
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [uploadsSort, setUploadsSort] = useState<'number' | 'title' | 'duration'>('number');
   const [myMusicSort, setMyMusicSort] = useState<'number' | 'title' | 'duration'>('number');
@@ -265,6 +272,7 @@ export default function CatalogScreen() {
         .order('id', { ascending: false });
 
       if (data) {
+        const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
         const mapped: Track[] = data.map((item: any) => {
           let resolvedCover = '';
           if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
@@ -272,9 +280,10 @@ export default function CatalogScreen() {
           } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
             resolvedCover = item.cover_url.trim();
           } else if (item.cover_key) {
-            const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
             const cleanKey = item.cover_key.replace(/^\/+/, '');
             resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
+          } else if (item.artwork) {
+            resolvedCover = item.artwork;
           }
 
           let dur = Number(item.duration);
@@ -308,6 +317,7 @@ export default function CatalogScreen() {
       
       const { data: cloudData } = await dbQuery.limit(50);
       if (cloudData) {
+        const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
         aggregated.push(...cloudData.map((item: any) => {
           let resolvedCover = '';
           if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
@@ -315,13 +325,14 @@ export default function CatalogScreen() {
           } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
             resolvedCover = item.cover_url.trim();
           } else if (item.cover_key) {
-            const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
             const cleanKey = item.cover_key.replace(/^\/+/, '');
             resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
+          } else if (item.artwork) {
+            resolvedCover = item.artwork;
           }
           return {
             id: String(item.id),
-            title: item.title,
+            title: item.title || 'Без названия',
             artist: item.artist || '',
             genre: item.genre || 'Cloud',
             duration: Number(item.duration) > 5 ? Number(item.duration) : 180,
@@ -584,7 +595,6 @@ export default function CatalogScreen() {
     setSelectedTrackMenu(null);
   };
 
-  // Множественное удаление
   const handleBatchRemove = (source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
       setMyMusicTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
@@ -595,7 +605,6 @@ export default function CatalogScreen() {
     setSelectedTrackMenu(null);
   };
 
-  // Множественное добавление в Мою музыку
   const handleBatchAddToMyMusic = () => {
     const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
     const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
@@ -608,7 +617,6 @@ export default function CatalogScreen() {
     setSelectedTrackMenu(null);
   };
 
-  // Множественное добавление в плейлист
   const handleBatchAddToPlaylist = (playlistId: string) => {
     const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
     const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
@@ -644,11 +652,11 @@ export default function CatalogScreen() {
   const sortTracks = (list: Track[], sortType: 'number' | 'title' | 'duration') => {
     const copy = [...list];
     if (sortType === 'title') {
-      return copy.sort((a, b) => a.title.localeCompare(b.title));
+      return copy.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
     } else if (sortType === 'duration') {
       return copy.sort((a, b) => (a.duration || 0) - (b.duration || 0));
     }
-    return copy; // 'number' (без сортировки)
+    return copy;
   };
 
   const handleAddTrackToPlaylist = (playlistId: string, track: Track) => {
@@ -786,7 +794,7 @@ export default function CatalogScreen() {
             )}
           </View>
 
-          {/* ПАНЕЛЬ СОРТИРОВКИ И МНОЖЕСТВЕННОГО ВЫБОРА ДЛЯ ЗАГРУЖЕННЫХ И МОЕЙ МУЗЫКИ */}
+          {/* ПАНЕЛЬ СОРТИРОВКИ И МНОЖЕСТВЕННОГО ВЫБОРА */}
           {(activeTab === 'uploads' || activeTab === 'my_music') && (
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)' }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -986,8 +994,6 @@ export default function CatalogScreen() {
                 const isChecked = selectedTrackIds.includes(item.id);
                 return (
                   <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
-                    
-                    {/* Чекбокс множественного выбора */}
                     <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
                       <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                         {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
@@ -1095,8 +1101,6 @@ export default function CatalogScreen() {
                   const isChecked = selectedTrackIds.includes(item.id);
                   return (
                     <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
-                      
-                      {/* Чекбокс множественного выбора */}
                       <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
                         <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                           {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
@@ -1417,7 +1421,6 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
-      {/* МЕНЮ ПО ТРОЕТОЧИЮ (ПОДДЕРЖИВАЕТ МАССОВЫЕ ДЕЙСТВИЯ, ЕСЛИ ВЫБРАНО НЕСКОЛЬКО ТРЕКОВ) */}
       <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           {selectedTrackMenu && (
