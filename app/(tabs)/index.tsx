@@ -374,6 +374,7 @@ export default function CatalogScreen() {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (!webAudioRef.current) webAudioRef.current = new Audio();
       webAudioRef.current.volume = volume;
+      webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
       const audio = webAudioRef.current;
       
       const updateTime = () => { 
@@ -404,7 +405,7 @@ export default function CatalogScreen() {
         audio.removeEventListener('ended', handleNext);
       };
     }
-  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration, m?.currentTrack]);
+  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration, m?.currentTrack, m?.playbackSpeed]);
 
   const updateSeekPosition = (clientX: number) => {
     const activeDuration = m?.currentTrack?.duration || trackDuration || 0;
@@ -499,6 +500,7 @@ export default function CatalogScreen() {
       try {
         webAudioRef.current.src = rawUrl;
         webAudioRef.current.volume = volume;
+        webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
         const playPromise = webAudioRef.current.play();
         if (playPromise !== undefined) {
           playPromise.catch(() => {
@@ -1514,6 +1516,112 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
+      {/* МОДАЛЬНОЕ ОКНО 12-ПОЛОСНОГО ЭКВАЛАЙЗЕРА */}
+      <Modal animationType="fade" transparent visible={showEqualizerModal}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(20px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ width: '100%', maxWidth: 760, backgroundColor: '#18181c', borderRadius: 28, padding: 26, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' }}>
+            
+            {/* Header */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <View>
+                <Text style={{ fontSize: 22, fontWeight: '900', color: '#ffffff' }}>12-полосный Эквалайзер</Text>
+                <Text style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>Настройка частот и скорости воспроизведения</Text>
+              </View>
+              <Pressable onPress={() => setShowEqualizerModal(false)} style={{ padding: 6, outlineStyle: 'none' as any }}>
+                <WebIcon name="close" size={22} color="#8e8e93" />
+              </Pressable>
+            </View>
+
+            {/* Скорость воспроизведения */}
+            <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 14, borderRadius: 16, marginBottom: 20 }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 10 }}>Скорость воспроизведения</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {[0.5, 0.8, 1.0, 1.25, 1.5, 2.0].map((s) => (
+                  <Pressable 
+                    key={s} 
+                    onPress={() => m?.setPlaybackSpeed?.(s)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 8,
+                      borderRadius: 10,
+                      backgroundColor: m?.playbackSpeed === s ? '#fa233b' : 'rgba(255,255,255,0.08)',
+                      alignItems: 'center',
+                      outlineStyle: 'none' as any
+                    }}
+                  >
+                    <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 13 }}>{s}x</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {/* Пресеты */}
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 10 }}>Пресеты звука</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20, paddingBottom: 4 }}>
+              {['Flat', 'Bass Boost', 'Acoustic', 'Pop', 'Rock', 'Electronic'].map((preset) => (
+                <Pressable
+                  key={preset}
+                  onPress={() => {
+                    const presetValues = {
+                      'Flat': [0,0,0,0,0,0,0,0,0,0,0,0],
+                      'Bass Boost': [6,6,5,3,1,0,0,0,0,0,0,0],
+                      'Acoustic': [4,3,2,1,2,3,3,4,3,2,1,0],
+                      'Pop': [-1,2,4,5,4,1,-1,-2,-1,1,3,4],
+                      'Rock': [5,4,3,1,-1,-1,1,3,4,5,5,4],
+                      'Electronic': [5,5,3,0,-2,2,1,2,4,5,5,4]
+                    }[preset];
+                    if (presetValues && m?.applyPreset) m.applyPreset(presetValues);
+                  }}
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    borderRadius: 12,
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    marginRight: 8,
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    outlineStyle: 'none' as any
+                  }}
+                >
+                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>{preset}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            {/* 12 Частотных Полос */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 160, backgroundColor: 'rgba(0,0,0,0.3)', padding: 14, borderRadius: 16, marginBottom: 20 }}>
+              {[32, 64, 125, 250, 500, '1k', '2k', '4k', '8k', '12k', '16k', '20k'].map((freq, idx) => {
+                const gain = m?.eqGains?.[idx] || 0;
+                const heightPercent = Math.min(100, Math.max(10, ((gain + 12) / 24) * 100));
+
+                return (
+                  <View key={idx} style={{ alignItems: 'center', flex: 1 }}>
+                    <Text style={{ fontSize: 10, color: '#fa233b', fontWeight: '800', marginBottom: 6 }}>{gain > 0 ? `+${gain}` : gain}</Text>
+                    
+                    {/* Ползунок шкалы */}
+                    <View style={{ width: 8, height: 100, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 4, justifyContent: 'flex-end', overflow: 'hidden' }}>
+                      <View style={{ width: '100%', height: `${heightPercent}%`, backgroundColor: '#fa233b', borderRadius: 4 }} />
+                    </View>
+
+                    <Text style={{ fontSize: 9, color: '#8e8e93', marginTop: 8, fontWeight: '700' }}>{freq}</Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* Кнопка Сброса */}
+            <Pressable 
+              onPress={() => m?.resetEq?.()} 
+              style={{ backgroundColor: 'rgba(250, 35, 59, 0.15)', paddingVertical: 12, borderRadius: 14, alignItems: 'center', outlineStyle: 'none' as any }}
+            >
+              <Text style={{ color: '#fa233b', fontWeight: '800', fontSize: 14 }}>Сбросить настройки EQ</Text>
+            </Pressable>
+
+          </View>
+        </View>
+      </Modal>
+
+      {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           {selectedTrackMenu && (
