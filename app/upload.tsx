@@ -1,17 +1,19 @@
 ﻿import { useState } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, Modal } from 'react-native';
 import { router } from 'expo-router';
+import * as DocumentPicker from 'expo-document-picker';
 import { supabase } from '../lib/supabase';
 
 interface FileToUpload {
-  fileObj?: File | any;
+  fileObj?: File | Blob | any;
+  uri?: string;
   name: string;
   size: number;
   duration?: number;
   coverBlob?: Blob | null;
 }
 
-// Функция для чтения ID3-тегов (обложки и длительности) прямо из MP3 в браузере
+// Извлечение длительности и обложки из MP3 в браузере
 async function extractMetadata(file: File): Promise<{ duration: number; coverBlob: Blob | null }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
@@ -41,7 +43,7 @@ async function extractMetadata(file: File): Promise<{ duration: number; coverBlo
                 (bytes[i] === 0xff && bytes[i + 1] === 0xd8) || 
                 (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x47)
               ) {
-                if (i > 0 && i < 50000) {
+                if (i > 0 && i < 100000) {
                   foundIndex = i;
                   if (bytes[i] === 0x89) mimeType = 'image/png';
                   break;
@@ -60,7 +62,7 @@ async function extractMetadata(file: File): Promise<{ duration: number; coverBlo
             resolve({ duration, coverBlob: null });
           }
         };
-        reader.readAsArrayBuffer(file.slice(0, 200000));
+        reader.readAsArrayBuffer(file.slice(0, 300000));
       } catch (ex) {
         resolve({ duration, coverBlob: null });
       }
@@ -83,7 +85,7 @@ export default function UploadScreen() {
     errors: []
   });
 
-  const handlePickFiles = () => {
+  const handlePickFiles = async () => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input');
       input.type = 'file';
@@ -109,6 +111,27 @@ export default function UploadScreen() {
         setSelectedFiles(prev => [...prev, ...newFiles]);
       };
       input.click();
+    } else {
+      try {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: 'audio/*',
+          multiple: true,
+          copyToCacheDirectory: true,
+        });
+
+        if (!result.canceled && result.assets) {
+          const newFiles: FileToUpload[] = result.assets.map(asset => ({
+            uri: asset.uri,
+            name: asset.name,
+            size: asset.size || 0,
+            duration: 180,
+            coverBlob: null
+          }));
+          setSelectedFiles(prev => [...prev, ...newFiles]);
+        }
+      } catch (err) {
+        console.error('Ошибка выбора файла:', err);
+      }
     }
   };
 
@@ -120,27 +143,37 @@ export default function UploadScreen() {
 
     let successCount = 0;
     const errors: string[] = [];
-    const userId = 'public-user';
+
+    // Получаем текущего пользователя или используем публичного
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id || 'public-user';
 
     for (let i = 0; i < selectedFiles.length; i++) {
       const item = selectedFiles[i];
       setUploadProgress({ current: i + 1, total: selectedFiles.length });
 
       try {
-        if (!item.fileObj) {
-          throw new Error('Файл не выбран');
+        let uploadPayload: Blob | File;
+
+        if (Platform.OS === 'web') {
+          if (!item.fileObj) throw new Error('Файл не выбран');
+          uploadPayload = item.fileObj;
+        } else {
+          if (!item.uri) throw new Error('URI файла не найден');
+          const response = await fetch(item.uri);
+          uploadPayload = await response.blob();
         }
 
         const cleanFileName = item.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const fileExt = cleanFileName.split('.').pop() || 'mp3';
-        const timestamp = Date.now();
-        const storagePath = `${userId}/${timestamp}_${cleanFileName}`;
+        const uniqueId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const storagePath = `${userId}/${uniqueId}_${cleanFileName}`;
 
         // 1. Загрузка аудиофайла
         const { error: storageError } = await supabase.storage
           .from('music-storage')
-          .upload(storagePath, item.fileObj, {
-            contentType: item.fileObj.type || `audio/${fileExt}`,
+          .upload(storagePath, uploadPayload, {
+            contentType: item.fileObj?.type || `audio/${fileExt}`,
             upsert: true
           });
 
@@ -154,7 +187,7 @@ export default function UploadScreen() {
         // 2. Загрузка обложки (если есть)
         let publicCoverUrl = '';
         if (item.coverBlob) {
-          const coverPath = `${userId}/${timestamp}_cover.jpg`;
+          const coverPath = `${userId}/${uniqueId}_cover.jpg`;
           const { error: coverStorageError } = await supabase.storage
             .from('music-storage')
             .upload(coverPath, item.coverBlob, {
@@ -173,11 +206,11 @@ export default function UploadScreen() {
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
         const title = nameWithoutExt.trim();
 
-        // 3. Запись метаданных в БД (длительность приведена к целому числу)
+        // 3. Запись метаданных в базу Supabase
         const { error: dbError } = await supabase
           .from('tracks')
           .insert({
-            id: String(timestamp),
+            id: uniqueId,
             title: title,
             audio_url: publicAudioUrl,
             cover_key: publicCoverUrl || null,

@@ -1332,45 +1332,182 @@ export default function CatalogScreen() {
         </View>
       </Modal>
 
+      {/* МОДАЛЬНОЕ ОКНО ПЛЕЙЛИСТА В СТИЛЕ VK МУЗЫКИ */}
       <Modal animationType="fade" transparent visible={!!selectedPlaylistModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.45)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+        <View style={{ 
+          flex: 1, 
+          backgroundColor: 'rgba(0, 0, 0, 0.65)', 
+          backdropFilter: 'blur(20px)' as any,
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          padding: 20 
+        }}>
           <View style={{ 
             width: '100%', 
-            maxWidth: 560, 
-            maxHeight: '80%', 
-            backgroundColor: 'rgba(35, 35, 42, 0.85)', 
-            backdropFilter: 'blur(35px) saturate(180%)' as any,
-            borderRadius: 32, 
-            padding: 24, 
+            maxWidth: 680, 
+            maxHeight: '85%', 
+            backgroundColor: '#19191d', 
+            borderRadius: 28, 
+            padding: 28, 
             borderWidth: 1, 
-            borderColor: 'rgba(255, 255, 255, 0.2)'
+            borderColor: 'rgba(255, 255, 255, 0.12)',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 12 },
+            shadowOpacity: 0.5,
+            shadowRadius: 24,
+            elevation: 10
           }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <Text style={{ fontSize: 22, fontWeight: '800', color: '#ffffff' }}>{selectedPlaylistModal?.title}</Text>
-              <Pressable onPress={() => setSelectedPlaylistModal(null)} style={{ padding: 4, outlineStyle: 'none' as any }}>
-                <WebIcon name="close" size={24} color="#d1d1d6" />
-              </Pressable>
-            </View>
+            {/* Кнопка закрытия */}
+            <Pressable 
+              onPress={() => setSelectedPlaylistModal(null)} 
+              style={{ position: 'absolute', top: 20, right: 20, zIndex: 10, padding: 6, outlineStyle: 'none' as any }}
+            >
+              <WebIcon name="close" size={22} color="#8e8e93" />
+            </Pressable>
+
+            {/* Header в стиле VK Музыки: Обложка + Название + Кнопка Слушать */}
+            {selectedPlaylistModal && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24, gap: 20 }}>
+                {/* Обложка плейлиста */}
+                <View style={{ 
+                  width: 110, 
+                  height: 110, 
+                  borderRadius: 18, 
+                  backgroundColor: '#2c2c34', 
+                  overflow: 'hidden', 
+                  justifyContent: 'center', 
+                  alignItems: 'center',
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 6 },
+                  shadowOpacity: 0.3,
+                  shadowRadius: 8
+                }}>
+                  {selectedPlaylistModal.tracks[0]?.cover_url ? (
+                    <Image source={{ uri: selectedPlaylistModal.tracks[0].cover_url }} style={{ width: '100%', height: '100%' }} />
+                  ) : (
+                    <Text style={{ fontSize: 42 }}>🎵</Text>
+                  )}
+                </View>
+
+                {/* Инфо плейлиста */}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#0077ff', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>
+                    Плейлист
+                  </Text>
+                  <Text numberOfLines={2} style={{ fontSize: 24, fontWeight: '900', color: '#ffffff', marginBottom: 6 }}>
+                    {selectedPlaylistModal.title}
+                  </Text>
+                  <Text style={{ fontSize: 13, color: '#8e8e93', fontWeight: '500', marginBottom: 14 }}>
+                    {selectedPlaylistModal.tracks.length} треков • RITM Music
+                  </Text>
+
+                  {/* Кнопка «Слушать» (VK Blue) */}
+                  {selectedPlaylistModal.tracks.length > 0 && (
+                    <Pressable 
+                      onPress={() => {
+                        if (selectedPlaylistModal.tracks[0]) {
+                          void safePlayTrack(selectedPlaylistModal.tracks[0], selectedPlaylistModal.tracks, selectedPlaylistModal.title);
+                          setSelectedPlaylistModal(null);
+                        }
+                      }}
+                      style={({ pressed }) => ({
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: '#0077ff',
+                        paddingHorizontal: 20,
+                        paddingVertical: 10,
+                        borderRadius: 22,
+                        alignSelf: 'flex-start',
+                        gap: 8,
+                        transform: [{ scale: pressed ? 0.96 : 1 }],
+                        shadowColor: '#0077ff',
+                        shadowOffset: { width: 0, height: 4 },
+                        shadowOpacity: 0.4,
+                        shadowRadius: 8,
+                        outlineStyle: 'none' as any
+                      })}
+                    >
+                      <WebIcon name="play" size={16} color="#ffffff" />
+                      <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 14 }}>Слушать все</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Разделитель */}
+            <View style={{ height: 1, backgroundColor: 'rgba(255, 255, 255, 0.08)', marginBottom: 16 }} />
+
+            {/* Список треков VK Style */}
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               {selectedPlaylistModal?.tracks.length === 0 ? (
-                <Text style={{ color: '#8e8e93', fontSize: 14, textAlign: 'center', marginVertical: 20 }}>В этом списке пока нет треков.</Text>
+                <View style={{ paddingVertical: 32, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 36, marginBottom: 8 }}>🎶</Text>
+                  <Text style={{ color: '#8e8e93', fontSize: 14, textAlign: 'center' }}>В этом плейлисте пока нет треков</Text>
+                </View>
               ) : (
-                selectedPlaylistModal?.tracks.map((track) => (
-                  <Pressable 
-                    key={track.id} 
-                    onPress={() => {
-                      void safePlayTrack(track, selectedPlaylistModal.tracks, selectedPlaylistModal.title);
-                      setSelectedPlaylistModal(null);
-                    }}
-                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 10, borderRadius: 12, marginBottom: 8, outlineStyle: 'none' as any }}
-                  >
-                    <TrackCoverImage track={track} style={{ width: 44, height: 44, borderRadius: 8, marginRight: 12 }} />
-                    <View style={{ flex: 1 }}>
-                      <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '700', color: '#ffffff' }}>{track.title}</Text>
-                    </View>
-                    <WebIcon name="play-circle" size={24} color="#fa233b" />
-                  </Pressable>
-                ))
+                selectedPlaylistModal?.tracks.map((track, idx) => {
+                  const isCurrentPlaying = m?.currentTrack?.id === track.id;
+                  return (
+                    <Pressable 
+                      key={track.id || idx} 
+                      onPress={() => {
+                        void safePlayTrack(track, selectedPlaylistModal.tracks, selectedPlaylistModal.title);
+                        setSelectedPlaylistModal(null);
+                      }}
+                      style={({ pressed }) => ({
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: pressed 
+                          ? 'rgba(255, 255, 255, 0.08)' 
+                          : isCurrentPlaying 
+                            ? 'rgba(0, 119, 255, 0.12)' 
+                            : 'transparent',
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 14,
+                        marginBottom: 4,
+                        outlineStyle: 'none' as any
+                      })}
+                    >
+                      {/* Порядковый номер */}
+                      <Text style={{ width: 24, fontSize: 13, fontWeight: '700', color: isCurrentPlaying ? '#0077ff' : '#6e6e73' }}>
+                        {idx + 1}
+                      </Text>
+
+                      {/* Обложка трека */}
+                      <TrackCoverImage track={track} style={{ width: 46, height: 46, borderRadius: 10, marginRight: 14 }} />
+
+                      {/* Название + Артист */}
+                      <View style={{ flex: 1, marginRight: 12 }}>
+                        <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '700', color: isCurrentPlaying ? '#0077ff' : '#ffffff' }}>
+                          {track.title}
+                        </Text>
+                        <Text numberOfLines={1} style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>
+                          {track.artist || 'Неизвестный исполнитель'}
+                        </Text>
+                      </View>
+
+                      {/* Длительность */}
+                      <Text style={{ fontSize: 12, color: '#8e8e93', marginRight: 14 }}>
+                        {formatTime(track.duration)}
+                      </Text>
+
+                      {/* Иконка запуска */}
+                      <View style={{ 
+                        width: 32, 
+                        height: 32, 
+                        borderRadius: 16, 
+                        backgroundColor: isCurrentPlaying ? '#0077ff' : 'rgba(255, 255, 255, 0.06)', 
+                        justifyContent: 'center', 
+                        alignItems: 'center' 
+                      }}>
+                        <WebIcon name={isCurrentPlaying && m?.isPlaying ? "pause" : "play"} size={14} color="#ffffff" />
+                      </View>
+                    </Pressable>
+                  );
+                })
               )}
             </ScrollView>
           </View>
