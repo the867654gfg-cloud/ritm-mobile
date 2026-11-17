@@ -1,5 +1,6 @@
 ﻿import { useState } from 'react';
-import { View, Text, TextInput, Pressable, Alert } from 'react-native';
+import { View, Text, TextInput, Pressable, Alert, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
@@ -11,7 +12,15 @@ export default function SignInModal() {
   const handleLogin = async () => {
     if (!email) return;
     setLoading(true);
-    const { error } = await supabase!.auth.signInWithOtp({ email });
+    // После перехода по ссылке из письма возвращаем пользователя на сайт (с учётом baseUrl на GitHub Pages)
+    const redirectTo =
+      Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.location.origin + (Constants.expoConfig?.experiments?.baseUrl ?? '') + '/'
+        : undefined;
+    const { error } = await supabase!.auth.signInWithOtp({
+      email,
+      options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+    });
     setLoading(false);
     if (error) {
       Alert.alert('Ошибка', error.message);

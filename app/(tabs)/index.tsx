@@ -60,6 +60,25 @@ const AUDIUS_HOSTS = [
   'https://audius-metadata-5.figment.io'
 ];
 
+let audiusHostsCache: string[] | null = null;
+
+// Актуальные хосты Audius отдаёт их API. Жёстко зашитый список остаётся запасным.
+async function getAudiusHosts(): Promise<string[]> {
+  if (audiusHostsCache) return audiusHostsCache;
+  let hosts: string[] = AUDIUS_HOSTS;
+  try {
+    const res = await fetch('https://api.audius.co');
+    const json = await res.json();
+    const fresh = Array.isArray(json?.data)
+      ? json.data.filter((h: any) => typeof h === 'string' && h.startsWith('https://'))
+      : [];
+    // Перемешиваем, чтобы не нагружать один и тот же узел
+    if (fresh.length > 0) hosts = [...fresh].sort(() => Math.random() - 0.5);
+  } catch (e) {}
+  audiusHostsCache = hosts;
+  return hosts;
+}
+
 function formatTime(secs: number): string {
   if (!secs || isNaN(secs) || secs < 0) return '00:00';
   const m = Math.floor(secs / 60);
@@ -237,6 +256,7 @@ export default function CatalogScreen() {
   const [hiddenTrackIds, setHiddenTrackIds] = useState<string[]>([]);
   const [currentQueue, setCurrentQueue] = useState<Track[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music'>('main');
   
@@ -253,6 +273,7 @@ export default function CatalogScreen() {
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   const seekBarContainerRef = useRef<any>(null);
   const volumeBarContainerRef = useRef<any>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -313,20 +334,31 @@ export default function CatalogScreen() {
   useEffect(() => { loadCloudTracks(); }, [activeTab]);
 
   const fetchRecommendedMusic = async (query: string, genre: string) => {
+    // Отменяем предыдущий запрос: иначе запоздавший ответ на старый запрос перезапишет свежие результаты
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     setIsSearching(true);
+    setSearchError(false);
     let aggregated: Track[] = [];
+    let failedSources = 0;
 
     try {
       let dbQuery = supabase.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '');
       if (query.trim().length >= 2) dbQuery = dbQuery.ilike('title', `%${query.trim()}%`);
       if (genre !== 'Все жанры') dbQuery = dbQuery.ilike('genre', `%${genre}%`);
       
-      const { data: cloudData } = await dbQuery.limit(50);
+      const { data: cloudData, error: cloudError } = await dbQuery.limit(50).abortSignal(controller.signal);
+      if (controller.signal.aborted) return;
+      if (cloudError) failedSources++;
       if (cloudData) {
         aggregated.push(...cloudData.map((item: any) => mapCloudTrack(item)));
       }
 
-      const host = AUDIUS_HOSTS[0];
+      const hosts = await getAudiusHosts();
+      if (controller.signal.aborted) return;
+      const host = hosts[0];
       const searchTerm = query.trim().length >= 2 ? query.trim() : (genre !== 'Все жанры' ? genre : '');
 
       let urlsToFetch: string[] = [];
@@ -339,8 +371,11 @@ export default function CatalogScreen() {
         ];
       }
 
-      const responses = await Promise.all(urlsToFetch.map(u => fetch(u).then(r => r.json()).catch(() => null)));
+      const responses = await Promise.all(urlsToFetch.map(u => fetch(u, { signal: controller.signal }).then(r => r.json()).catch(() => null)));
       
+      if (controller.signal.aborted) return;
+      if (responses.every(r => !r)) failedSources++;
+
       responses.forEach((res) => {
         if (res && res.data && Array.isArray(res.data)) {
           const items = res.data.map((item: any) => ({
@@ -359,9 +394,12 @@ export default function CatalogScreen() {
 
       const filtered = aggregated.filter(t => !hiddenTrackIds.includes(t.id));
       setGlobalSearchResults(filtered);
+      if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
+      if (!controller.signal.aborted) setSearchError(true);
     } finally {
-      setIsSearching(false);
+      // Индикатор гасит только последний запрос, отменённый его не трогает
+      if (searchAbortRef.current === controller) setIsSearching(false);
     }
   };
 
@@ -369,6 +407,8 @@ export default function CatalogScreen() {
     const timer = setTimeout(() => { void fetchRecommendedMusic(searchQuery, selectedGenre); }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery, selectedGenre, hiddenTrackIds]);
+
+  useEffect(() => () => { searchAbortRef.current?.abort(); }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -512,7 +552,7 @@ export default function CatalogScreen() {
         if (playPromise !== undefined) {
           playPromise.catch(() => {
             if (track.raw_id) {
-              const fallbackUrl = `${AUDIUS_HOSTS[1]}/v1/tracks/${track.raw_id}/stream?app_name=RITM_APP`;
+              const fallbackUrl = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${track.raw_id}/stream?app_name=RITM_APP`;
               webAudioRef.current!.src = fallbackUrl;
               webAudioRef.current!.play().catch(() => {});
             }
@@ -933,6 +973,16 @@ export default function CatalogScreen() {
               </Text>
 
               {isSearching && <ActivityIndicator size="small" color="#fa233b" style={{ marginVertical: 12 }} />}
+
+              {searchError && !isSearching && (
+                <Pressable
+                  onPress={() => void fetchRecommendedMusic(searchQuery, selectedGenre)}
+                  style={{ backgroundColor: 'rgba(250, 35, 59, 0.08)', borderRadius: 12, padding: 14, marginBottom: 12 }}
+                >
+                  <Text style={{ color: '#fa233b', fontWeight: '700', fontSize: 14 }}>Не удалось загрузить музыку</Text>
+                  <Text style={{ color: '#8e8e93', fontSize: 12, marginTop: 2 }}>Проверьте соединение и нажмите, чтобы повторить</Text>
+                </Pressable>
+              )}
 
               {globalSearchResults.map((item: Track) => {
                 const isSelected = m?.currentTrack?.id === item.id;

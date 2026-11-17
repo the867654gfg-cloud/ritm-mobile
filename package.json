@@ -9,7 +9,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "deploy": "npx expo export --platform web --clear --public-url /ritm-mobile/ && powershell Copy-Item -Path dist/index.html -Destination dist/404.html -Force && gh-pages -d dist"
+    "deploy": "npx expo export --platform web --clear && powershell Copy-Item -Path dist/index.html -Destination dist/404.html -Force && gh-pages -d dist"
   },
   "dependencies": {
     "@expo/metro-runtime": "~3.2.3",
