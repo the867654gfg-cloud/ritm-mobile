@@ -372,7 +372,13 @@ export default function CatalogScreen() {
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      if (!webAudioRef.current) webAudioRef.current = new Audio();
+      if (!webAudioRef.current) {
+        const el = new Audio();
+        // Нужно для Web Audio (эквалайзер): без CORS браузер глушит звук сторонних источников
+        el.crossOrigin = 'anonymous';
+        webAudioRef.current = el;
+        m?.attachAudioElement?.(el);
+      }
       webAudioRef.current.volume = volume;
       webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
       const audio = webAudioRef.current;
@@ -501,6 +507,7 @@ export default function CatalogScreen() {
         webAudioRef.current.src = rawUrl;
         webAudioRef.current.volume = volume;
         webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
+        m?.attachAudioElement?.(webAudioRef.current);
         const playPromise = webAudioRef.current.play();
         if (playPromise !== undefined) {
           playPromise.catch(() => {
@@ -542,8 +549,12 @@ export default function CatalogScreen() {
 
   const handleTogglePlay = async () => {
     if (Platform.OS === 'web' && webAudioRef.current && webAudioRef.current.src) {
-      if (webAudioRef.current.paused) await webAudioRef.current.play().catch(() => {});
-      else webAudioRef.current.pause();
+      if (webAudioRef.current.paused) {
+        m?.attachAudioElement?.(webAudioRef.current);
+        await webAudioRef.current.play().catch(() => {});
+      } else {
+        webAudioRef.current.pause();
+      }
     }
     try {
       if (m?.isPlaying) { if (typeof m?.pauseTrack === 'function') await m.pauseTrack(); }

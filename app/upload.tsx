@@ -215,7 +215,8 @@ export default function UploadScreen() {
             audio_url: publicAudioUrl,
             cover_key: publicCoverUrl || null,
             duration: item.duration ? Math.round(item.duration) : 180,
-            genre: 'Deep House'
+            genre: 'Deep House',
+            ...(user?.id ? { user_id: user.id } : {}),
           });
 
         if (dbError) throw dbError;

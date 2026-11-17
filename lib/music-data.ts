@@ -2,17 +2,23 @@
 
 export type Track = {
   id: string;
-  artist_id?: string;
   title: string;
-  audio_url: string;
-  cover_key: string;
-  cover_url?: string | null;
   duration: number;
   genre: string;
-  is_demo: boolean;
-  source_url: string | null;
-  sort_order: number;
+  artist?: string;
+  /** Готовая ссылка на аудио (Audius или путь в Supabase Storage) */
+  url?: string;
+  /** Ссылка на аудио из таблицы tracks */
+  audio_url?: string;
+  cover_key?: string | null;
+  cover_url?: string | null;
+  /** id трека на Audius, нужен для запасного хоста */
+  raw_id?: string | number;
+  artist_id?: string;
   user_id?: string | null;
+  is_demo?: boolean;
+  source_url?: string | null;
+  sort_order?: number;
 };
 
 export type Artist = {
