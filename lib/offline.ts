@@ -10,6 +10,10 @@ export function registerOfflineShell() {
     const style = document.createElement('style');
     style.id = 'ritm-motion';
     style.textContent = `
+      .ritm-row-slider { appearance:none; height:3px; border-radius:3px; margin:4px 0; cursor:pointer; background:linear-gradient(to right,#fa233b var(--ritm-fill),#c7cbd1 var(--ritm-fill)); }
+      .ritm-row-slider::-webkit-slider-thumb { appearance:none; width:9px; height:9px; border-radius:50%; background:#fa233b; opacity:0; }
+      .ritm-row-slider:hover::-webkit-slider-thumb,.ritm-row-slider:focus::-webkit-slider-thumb {opacity:1;}
+      .ritm-row-slider::-moz-range-thumb {width:7px; height:7px; border:0; background:#fa233b;}
       .ritm-playlist-actions { position:absolute; inset:0; display:flex; align-items:center; justify-content:space-around; background:#27292c99; opacity:0; transition:opacity 180ms ease; pointer-events:none; }
       .ritm-playlist-card:hover .ritm-playlist-actions, .ritm-playlist-card:focus-within .ritm-playlist-actions { opacity:1; }
       .ritm-playlist-actions button { border:0; color:white; background:transparent; font-size:28px; cursor:pointer; padding:8px; pointer-events:auto; }
