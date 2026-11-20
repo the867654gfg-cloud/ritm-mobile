@@ -16,6 +16,10 @@ export type Track = {
   raw_id?: string | number;
   artist_id?: string;
   user_id?: string | null;
+  created_at?: string;
+  description?: string;
+  published_at?: string;
+  play_count?: number;
   is_demo?: boolean;
   source_url?: string | null;
   sort_order?: number;

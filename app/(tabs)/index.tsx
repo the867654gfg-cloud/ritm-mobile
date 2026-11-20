@@ -1,9 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
-import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform } from 'react-native';
+import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { useMusic } from '../../lib/music';
 import { Track } from '../../lib/music-data';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../lib/auth';
+import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
+import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
+import { ArtistPanel } from '../../components/ArtistPanel';
+import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
+import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
+import { addTracksToPlaylist, createUserPlaylist, hasLegacyLibrary, importLegacyLibrary, loadPlayCounts, loadUserLibrary, recordListening, setFavorite, UserPlaylist } from '../../lib/user-library';
 
 function WebIcon({ name, size = 18, color = '#1c1c1e' }: { name: string; size?: number; color?: string }) {
   const paths: { [key: string]: string } = {
@@ -86,6 +93,12 @@ function formatTime(secs: number): string {
   return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+function formatDate(value?: string): string {
+  if (!value) return 'дата не указана';
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? 'дата не указана' : date.toLocaleDateString('ru-RU', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 function mapCloudTrack(item: any): Track {
   const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
   let resolvedCover = '';
@@ -108,10 +121,14 @@ function mapCloudTrack(item: any): Track {
     id: String(item.id),
     title: item.title || 'Без названия',
     artist: item.artist || '',
-    genre: item.genre || 'Deep House',
+    genre: item.genre || '',
     duration: dur,
-    url: item.audio_url || item.url || '',
+    url: item.audio_url || item.url || (/^audius_[A-Za-z0-9]{1,32}$/.test(item.id) ? 'https://api.audius.co/v1/tracks/' + item.id.slice(7) + '/stream?app_name=RITM_APP' : ''),
     cover_url: resolvedCover,
+    created_at: item.created_at || item.release_date || item.createdAt,
+    published_at: item.published_at || item.release_date,
+    user_id: item.user_id,
+    description: item.description,
   };
 }
 
@@ -155,7 +172,13 @@ function TrackCoverImage({ track, style }: { track: Track | null; style: any }) 
   );
 }
 
-export default function CatalogScreen() {
+export default function CatalogRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#fa233b" />;
+  return <CatalogScreen key={user?.id ?? 'guest'} />;
+}
+
+function CatalogScreen() {
   let m: any = {};
   try {
     m = useMusic() || {};
@@ -163,29 +186,36 @@ export default function CatalogScreen() {
     m = {};
   }
 
-  const [userProfile, setUserProfile] = useState<{
-    isLoggedIn: boolean;
-    name: string;
-    phoneOrEmail: string;
-    avatarUrl: string;
-  }>({
-    isLoggedIn: false,
-    name: 'Гость',
-    phoneOrEmail: '',
-    avatarUrl: DEFAULT_AVATAR,
-  });
+  const { user: authUser, profile: authProfile, loading: authLoading, signOut } = useAuth();
+  const compact = useWindowDimensions().width < 780;
+  const [playlistEdit, setPlaylistEdit] = useState<UserPlaylist | null>(null);
+  const [artistId, setArtistId] = useState<string | null>(null);
+  const [reportTrack, setReportTrack] = useState<Track | null>(null);
+  const [reason, setReason] = useState('');
+  const [notice, setNotice] = useState('');
+  const [shared, setShared] = useState<{ title: string; tracks: Track[]; cover?: string } | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [offlineList, setOfflineList] = useState(offlineTracks);
+  const [importing, setImporting] = useState(false);
+  const userProfile = {
+    isLoggedIn: !!authUser,
+    name: authProfile?.username || authUser?.user_metadata?.username || 'Пользователь',
+    phoneOrEmail: authUser?.email || '',
+    avatarUrl: authProfile?.avatar_url || '',
+  };
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showEqualizerModal, setShowEqualizerModal] = useState(false);
   const [selectedTrackMenu, setSelectedTrackMenu] = useState<{ track: Track; source: 'network' | 'my_music' | 'uploads' } | null>(null);
+  const [selectedTrackDetails, setSelectedTrackDetails] = useState<Track | null>(null);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
-  const [selectedPlaylistModal, setSelectedPlaylistModal] = useState<{ title: string; tracks: Track[] } | null>(null);
+  const [selectedPlaylistModal, setSelectedPlaylistModal] = useState<{ id?: string; title: string; tracks: Track[]; cover?: string } | null>(null);
   
   const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
   const [newPlaylistTitle, setNewPlaylistTitle] = useState('');
   
-  const [userPlaylists, setUserPlaylists] = useState<{ id: string; title: string; tracks: Track[]; cover?: string }[]>(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+  const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>(() => {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('ritm_user_playlists');
         if (saved) return JSON.parse(saved);
@@ -195,7 +225,7 @@ export default function CatalogScreen() {
   });
 
   const [myMusicTracks, setMyMusicTracks] = useState<Track[]>(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('ritm_my_music');
         if (saved) {
@@ -208,7 +238,7 @@ export default function CatalogScreen() {
   });
 
   const [recentlyPlayed, setRecentlyPlayed] = useState<Track[]>(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('ritm_recently_played');
         if (saved) {
@@ -225,7 +255,7 @@ export default function CatalogScreen() {
   const [myMusicSort, setMyMusicSort] = useState<'number' | 'title' | 'duration'>('number');
 
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         localStorage.setItem('ritm_user_playlists', JSON.stringify(userPlaylists));
       } catch (e) {}
@@ -233,7 +263,7 @@ export default function CatalogScreen() {
   }, [userPlaylists]);
 
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         localStorage.setItem('ritm_my_music', JSON.stringify(myMusicTracks));
       } catch (e) {}
@@ -241,7 +271,7 @@ export default function CatalogScreen() {
   }, [myMusicTracks]);
 
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!authUser && Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         localStorage.setItem('ritm_recently_played', JSON.stringify(recentlyPlayed));
       } catch (e) {}
@@ -257,6 +287,7 @@ export default function CatalogScreen() {
   const [currentQueue, setCurrentQueue] = useState<Track[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
+  const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
 
   const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music'>('main');
   
@@ -271,55 +302,25 @@ export default function CatalogScreen() {
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
 
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playRequest = useRef(0);
+  const playContext = useRef('Слушать');
+  const scopedKey = 'ritm_resume_' + (authUser?.id ?? 'guest');
+  const [resumePoint, setResumePoint] = useState<{ track: Track; seconds: number } | null>(() => {
+    try { return JSON.parse(localStorage.getItem(scopedKey) || 'null'); } catch { return null; }
+  });
   const seekBarContainerRef = useRef<any>(null);
   const volumeBarContainerRef = useRef<any>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUserProfile({
-          isLoggedIn: true,
-          name: session.user.user_metadata?.full_name || 'Пользователь',
-          phoneOrEmail: session.user.email || '',
-          avatarUrl: session.user.user_metadata?.avatar_url || DEFAULT_AVATAR
-        });
-      } else {
-        setUserProfile({
-          isLoggedIn: false,
-          name: 'Гость',
-          phoneOrEmail: '',
-          avatarUrl: DEFAULT_AVATAR,
-        });
-      }
-    });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUserProfile({
-          isLoggedIn: true,
-          name: session.user.user_metadata?.full_name || 'Пользователь',
-          phoneOrEmail: session.user.email || '',
-          avatarUrl: session.user.user_metadata?.avatar_url || DEFAULT_AVATAR
-        });
-      } else {
-        setUserProfile({
-          isLoggedIn: false,
-          name: 'Гость',
-          phoneOrEmail: '',
-          avatarUrl: DEFAULT_AVATAR,
-        });
-      }
-    });
-
-    return () => authListener.subscription.unsubscribe();
-  }, []);
 
   const loadCloudTracks = async () => {
+    if (!supabase) return;
+    if (!authUser) return;
     try {
       const { data } = await supabase
         .from('tracks')
         .select('*')
+        .eq('user_id', authUser.id)
         .not('audio_url', 'is', null)
         .neq('audio_url', '')
         .order('id', { ascending: false });
@@ -333,7 +334,51 @@ export default function CatalogScreen() {
 
   useEffect(() => { loadCloudTracks(); }, [activeTab]);
 
+  const refreshLibrary = async () => {
+    if (!authUser) return;
+    try {
+      const library = await loadUserLibrary(authUser.id);
+      setMyMusicTracks(library.favorites);
+      setUserPlaylists(library.playlists);
+      setRecentlyPlayed(library.history);
+    } catch { setNotice('Не удалось загрузить медиатеку. Обновите страницу.'); }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authUser) return;
+    void loadUserLibrary(authUser.id).then(library => {
+      if (cancelled) return;
+      setMyMusicTracks(library.favorites);
+      setUserPlaylists(library.playlists);
+      setRecentlyPlayed(library.history);
+    }).catch(() => { if (!cancelled) setNotice('Не удалось загрузить медиатеку. Обновите страницу.'); });
+    return () => { cancelled = true; };
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !supabase) return;
+    const params = new URL(window.location.href).searchParams;
+    const author = params.get('artist');
+    if (author && /^[\da-f-]{36}$/i.test(author)) setArtistId(author);
+    const id = params.get('playlist');
+    if (!id || !/^[\da-f-]{36}$/i.test(id)) return;
+    void supabase.rpc('ritm_shared_playlist', { link_id: id }).then(({ data, error }) => {
+      if (error || !data) setNotice('Плейлист недоступен по этой ссылке.');
+      else setShared({ title: data.title, cover: data.cover, tracks: data.tracks.map(mapCloudTrack) });
+    });
+  }, []);
+
+  useEffect(() => {
+    const ids = [...cloudUploadedTracks, ...globalSearchResults, ...myMusicTracks].map((track) => track.id);
+    void loadPlayCounts(ids).then((counts) => setPlayCounts((previous) => ({ ...previous, ...counts })));
+  }, [cloudUploadedTracks, globalSearchResults, myMusicTracks]);
+
   const fetchRecommendedMusic = async (query: string, genre: string) => {
+    if (!supabase) {
+      setSearchError(true);
+      return;
+    }
     // Отменяем предыдущий запрос: иначе запоздавший ответ на старый запрос перезапишет свежие результаты
     searchAbortRef.current?.abort();
     const controller = new AbortController();
@@ -387,12 +432,14 @@ export default function CatalogScreen() {
             url: `${host}/v1/tracks/${item.id}/stream?app_name=RITM_APP`,
             raw_id: item.id,
             cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'] || '',
+            published_at: item.release_date,
+            description: item.description,
           }));
           aggregated.push(...items);
         }
       });
 
-      const filtered = aggregated.filter(t => !hiddenTrackIds.includes(t.id));
+      const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !hiddenTrackIds.includes(t.id));
       setGlobalSearchResults(filtered);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
@@ -409,6 +456,11 @@ export default function CatalogScreen() {
   }, [searchQuery, selectedGenre, hiddenTrackIds]);
 
   useEffect(() => () => { searchAbortRef.current?.abort(); }, []);
+  useEffect(() => () => {
+    playRequest.current++;
+    webAudioRef.current?.pause();
+    m.clearTrack?.();
+  }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -506,15 +558,12 @@ export default function CatalogScreen() {
     try { if (typeof m?.pauseTrack === 'function') m.pauseTrack(); } catch (e) {}
   };
 
-  const safePlayTrack = async (track: Track, queueList?: Track[], context?: string) => {
+  const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0) => {
+    const request = ++playRequest.current;
+    playContext.current = context || 'Слушать';
     stopAudio();
     if (queueList && queueList.length > 0) setCurrentQueue(queueList);
     else setCurrentQueue(globalSearchResults);
-
-    setRecentlyPlayed(prev => {
-      const filtered = prev.filter(t => t.id !== track.id);
-      return [track, ...filtered].slice(0, 30);
-    });
 
     let playableTrack = track;
     try {
@@ -541,24 +590,36 @@ export default function CatalogScreen() {
     setCurrentTime(0);
 
     if (Platform.OS === 'web' && webAudioRef.current) {
-      if (!rawUrl || rawUrl.trim().length === 0) return;
-
+      const audio = webAudioRef.current;
+      if (request !== playRequest.current) return;
+      if (!rawUrl) { void m.pauseTrack(); setNotice('У трека нет доступного аудиофайла.'); return; }
       try {
-        webAudioRef.current.src = rawUrl;
-        webAudioRef.current.volume = volume;
-        webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
-        m?.attachAudioElement?.(webAudioRef.current);
-        const playPromise = webAudioRef.current.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(() => {
-            if (track.raw_id) {
-              const fallbackUrl = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${track.raw_id}/stream?app_name=RITM_APP`;
-              webAudioRef.current!.src = fallbackUrl;
-              webAudioRef.current!.play().catch(() => {});
-            }
-          });
+        audio.src = rawUrl;
+        audio.volume = volume;
+        audio.playbackRate = m?.playbackSpeed || 1.0;
+        m?.attachAudioElement?.(audio);
+        try { await audio.play(); } catch (error) {
+          const audiusId = track.raw_id || (track.id.startsWith('audius_') ? track.id.slice(7) : null);
+          if (!audiusId || request !== playRequest.current) throw error;
+          audio.src = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${audiusId}/stream?app_name=RITM_APP`;
+          await audio.play();
         }
-      } catch (err) {}
+        if (request !== playRequest.current) return;
+        if (startAt > 0 && startAt < audio.duration) audio.currentTime = startAt;
+        setRecentlyPlayed(previous => [track, ...previous.filter(item => item.id !== track.id)].slice(0, 30));
+        if (authUser) {
+          const source = context === 'Автор' ? 'artist' : context === 'Общий плейлист' ? 'shared'
+            : context === 'Моя музыка' ? 'library' : context === 'Слушать' ? 'catalog' : 'playlist';
+          void recordListening(authUser.id, track, source).then(count => {
+            if (count !== undefined) setPlayCounts(previous => ({ ...previous, [track.id]: count }));
+          }).catch(() => setNotice('Не удалось синхронизировать прослушивание.'));
+        }
+      } catch {
+        if (request === playRequest.current) {
+          void m.pauseTrack();
+          setNotice('Этот трек сейчас не удалось воспроизвести.');
+        }
+      }
     }
   };
 
@@ -573,18 +634,18 @@ export default function CatalogScreen() {
     const activeList = currentQueue.length > 0 ? currentQueue : globalSearchResults;
     if (activeList.length === 0) return;
     if (isShuffle) {
-      playTrackAtIndex(Math.floor(Math.random() * activeList.length), activeList, 'Перемешано');
+      playTrackAtIndex(Math.floor(Math.random() * activeList.length), activeList, playContext.current);
       return;
     }
     const currentIndex = activeList.findIndex(t => t.id === m?.currentTrack?.id);
-    playTrackAtIndex(currentIndex !== -1 ? currentIndex + 1 : 0, activeList, 'Плеер');
+    playTrackAtIndex(currentIndex !== -1 ? currentIndex + 1 : 0, activeList, playContext.current);
   };
 
   const handlePrevious = () => {
     const activeList = currentQueue.length > 0 ? currentQueue : globalSearchResults;
     if (activeList.length === 0) return;
     const currentIndex = activeList.findIndex(t => t.id === m?.currentTrack?.id);
-    playTrackAtIndex(currentIndex !== -1 ? currentIndex - 1 : activeList.length - 1, activeList, 'Плеер');
+    playTrackAtIndex(currentIndex !== -1 ? currentIndex - 1 : activeList.length - 1, activeList, playContext.current);
   };
 
   const handleTogglePlay = async () => {
@@ -614,8 +675,14 @@ export default function CatalogScreen() {
     }
   };
 
-  const toggleAddToMyMusic = (track: Track) => {
+  const toggleAddToMyMusic = async (track: Track) => {
+    if (!authUser) {
+      router.push('/sign-in');
+      return;
+    }
     const exists = myMusicTracks.some(t => t.id === track.id);
+    const saved = await setFavorite(authUser.id, track, !exists);
+    if (!saved) { setNotice('Не удалось обновить избранное.'); return; }
     if (exists) {
       setMyMusicTracks(prev => prev.filter(t => t.id !== track.id));
     } else {
@@ -623,47 +690,71 @@ export default function CatalogScreen() {
     }
   };
 
+  // Сообщение пользователю, если что-то удалилось не полностью
+  const reportDeleteResult = (result: DeleteTracksResult, total: number) => {
+    let message = '';
+    if (result.failedIds.length > 0) {
+      message = `Не удалось удалить ${result.failedIds.length} из ${total}. Удалять можно только свои загруженные треки.`;
+    } else if (result.filesLeft) {
+      message = 'Трек удалён, но часть файлов не удалось убрать из хранилища.';
+    }
+    if (!message) return;
+    if (Platform.OS === 'web' && typeof window !== 'undefined') window.alert(message);
+    else console.warn(message);
+  };
+
   const handleRemoveTrack = async (track: Track, source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
-      setMyMusicTracks(prev => prev.filter(t => t.id !== track.id));
+      if (authUser && await setFavorite(authUser.id, track, false)) setMyMusicTracks(prev => prev.filter(t => t.id !== track.id));
     } else if (source === 'uploads') {
-      try {
-        await supabase.from('tracks').delete().eq('id', track.id);
-      } catch (e) {}
-      setCloudUploadedTracks(prev => prev.filter(t => t.id !== track.id));
+      const result = await deleteTracksWithFiles([track.id]);
+      // Из списка убираем только то, что реально удалилось в базе
+      setCloudUploadedTracks(prev => prev.filter(t => !result.deletedIds.includes(t.id)));
+      reportDeleteResult(result, 1);
     }
     setSelectedTrackMenu(null);
   };
 
   const handleBatchRemove = async (source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
-      setMyMusicTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
+      const tracks = myMusicTracks.filter((track) => selectedTrackIds.includes(track.id));
+      if (!authUser) return;
+      const results = await Promise.all(tracks.map((track) => setFavorite(authUser.id, track, false)));
+      const removed = new Set(tracks.filter((_, index) => results[index]).map(track => track.id));
+      setMyMusicTracks(prev => prev.filter(track => !removed.has(track.id)));
+      if (removed.size !== tracks.length) setNotice('Часть треков не удалось убрать из избранного.');
     } else if (source === 'uploads') {
-      try {
-        await supabase.from('tracks').delete().in('id', selectedTrackIds);
-      } catch (e) {}
-      setCloudUploadedTracks(prev => prev.filter(t => !selectedTrackIds.includes(t.id)));
+      const result = await deleteTracksWithFiles(selectedTrackIds);
+      setCloudUploadedTracks(prev => prev.filter(t => !result.deletedIds.includes(t.id)));
+      reportDeleteResult(result, selectedTrackIds.length);
     }
     setSelectedTrackIds([]);
     setSelectedTrackMenu(null);
   };
 
-  const handleBatchAddToMyMusic = () => {
+  const handleBatchAddToMyMusic = async () => {
+    if (!authUser) { router.push('/sign-in'); return; }
     const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
     const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
+    const existingIds = new Set(myMusicTracks.map(t => t.id));
+    const newItems = tracksToAdd.filter(t => !existingIds.has(t.id));
+    const results = await Promise.all(newItems.map((track) => setFavorite(authUser.id, track, true)));
+    const savedItems = newItems.filter((_, index) => results[index]);
     setMyMusicTracks(prev => {
       const existingIds = new Set(prev.map(t => t.id));
-      const newItems = tracksToAdd.filter(t => !existingIds.has(t.id));
-      return [...newItems, ...prev];
+      return [...savedItems.filter(t => !existingIds.has(t.id)), ...prev];
     });
     setSelectedTrackIds([]);
     setSelectedTrackMenu(null);
   };
 
-  const handleBatchAddToPlaylist = (playlistId: string) => {
+  const handleBatchAddToPlaylist = async (playlistId: string) => {
+    if (!authUser) { router.push('/sign-in'); return; }
     const targetTracks = activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks;
     const tracksToAdd = targetTracks.filter(t => selectedTrackIds.includes(t.id));
     
+    const playlist = userPlaylists.find((item) => item.id === playlistId);
+    if (!playlist || !await addTracksToPlaylist(authUser.id, playlistId, tracksToAdd, playlist.tracks.length)) return;
     setUserPlaylists(prev => prev.map(pl => {
       if (pl.id === playlistId) {
         const existingIds = new Set(pl.tracks.map(t => t.id));
@@ -702,7 +793,10 @@ export default function CatalogScreen() {
     return copy;
   };
 
-  const handleAddTrackToPlaylist = (playlistId: string, track: Track) => {
+  const handleAddTrackToPlaylist = async (playlistId: string, track: Track) => {
+    if (!authUser) { router.push('/sign-in'); return; }
+    const playlist = userPlaylists.find((item) => item.id === playlistId);
+    if (!playlist || !await addTracksToPlaylist(authUser.id, playlistId, [track], playlist.tracks.length)) return;
     setUserPlaylists(prev => prev.map(pl => {
       if (pl.id === playlistId) {
         const exists = pl.tracks.some(t => t.id === track.id);
@@ -714,13 +808,11 @@ export default function CatalogScreen() {
     setShowPlaylistSelector(false);
   };
 
-  const handleCreatePlaylist = () => {
+  const handleCreatePlaylist = async () => {
     if (!newPlaylistTitle.trim()) return;
-    const newPl = {
-      id: `pl_${Date.now()}`,
-      title: newPlaylistTitle.trim(),
-      tracks: [],
-    };
+    if (!authUser) { router.push('/sign-in'); return; }
+    const newPl = await createUserPlaylist(authUser.id, newPlaylistTitle.trim());
+    if (!newPl) { setNotice('Не удалось создать плейлист.'); return; }
     setUserPlaylists(prev => [newPl, ...prev]);
     setNewPlaylistTitle('');
     setShowCreatePlaylistModal(false);
@@ -733,52 +825,113 @@ export default function CatalogScreen() {
   const smartPlaylists = [
     { id: 'smart_trending', title: '🔥 Популярное', tracks: globalSearchResults.slice(0, 50), cover_url: globalSearchResults[0]?.cover_url || '' },
     { id: 'smart_recent', title: '🕒 Недавно прослушиваемые', tracks: recentlyPlayed, cover_url: recentlyPlayed[0]?.cover_url || '' },
+    { id: 'smart_favorites', title: 'На основе избранного', tracks: globalSearchResults.filter(track => myMusicTracks.some(favorite => favorite.genre && favorite.genre === track.genre) && !myMusicTracks.some(favorite => favorite.id === track.id)).slice(0, 24), cover_url: '' },
+    { id: 'smart_week', title: 'Микс недели', tracks: [...globalSearchResults].sort((a, b) => {
+      const week = Math.floor(Date.now() / 604800000);
+      const rank = (id: string) => [...(week + id)].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261) >>> 0;
+      return rank(a.id) - rank(b.id);
+    }).slice(0, 20), cover_url: '' },
   ];
 
   const activeDuration = m?.currentTrack?.duration || trackDuration || 180;
   const progressPercent = activeDuration > 0 ? Math.min(100, Math.max(0, (currentTime / activeDuration) * 100)) : 0;
+  const resumeInterval = Math.floor(currentTime / 5);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !m.currentTrack || resumeInterval < 1) return;
+    try {
+      localStorage.setItem(scopedKey, JSON.stringify({ track: m.currentTrack, seconds: resumeInterval * 5 }));
+    } catch {}
+  }, [m.currentTrack?.id, resumeInterval, scopedKey]);
+
+  const mediaActions = useRef({ next: handleNext, previous: handlePrevious });
+  mediaActions.current = { next: handleNext, previous: handlePrevious };
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !('mediaSession' in navigator) || !m.currentTrack) return;
+    const media = navigator.mediaSession;
+    const track: Track = m.currentTrack;
+    media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: track.cover_url ? [{ src: track.cover_url }] : [] });
+    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
+      play: () => { void webAudioRef.current?.play().then(m.resumeTrack).catch(() => {}); },
+      pause: () => { webAudioRef.current?.pause(); void m.pauseTrack(); },
+      nexttrack: () => mediaActions.current.next(),
+      previoustrack: () => mediaActions.current.previous(),
+      seekto: details => {
+        const audio = webAudioRef.current;
+        if (audio && typeof details.seekTime === 'number' && Number.isFinite(audio.duration)) {
+          audio.currentTime = Math.min(audio.duration, Math.max(0, details.seekTime));
+        }
+      },
+    };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try { media.setActionHandler(action as MediaSessionAction, handler); } catch {}
+    }
+    return () => {
+      media.metadata = null;
+      for (const action of Object.keys(handlers)) {
+        try { media.setActionHandler(action as MediaSessionAction, null); } catch {}
+      }
+    };
+  }, [m.currentTrack?.id]);
+  useEffect(() => {
+    if (Platform.OS === 'web' && 'mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
+    }
+  }, [m.currentTrack?.id, m.isPlaying]);
 
   return (
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
-      <View style={{ flex: 1, flexDirection: 'row', overflow: 'hidden' }}>
+      <View style={{ flex: 1, flexDirection: compact ? 'column' : 'row', overflow: 'hidden' }}>
         
         {/* ЛЕВОЕ МЕНЮ */}
         <View style={{ 
-          width: 250, 
+          width: compact ? '100%' : 250,
           backgroundColor: '#fafafa', 
           borderRightWidth: 1, 
           borderColor: 'rgba(0, 0, 0, 0.08)', 
-          paddingVertical: 24, 
+          paddingVertical: compact ? 8 : 24,
           paddingHorizontal: 16,
           zIndex: 50
         }}>
-          <View style={{ marginBottom: 28, zIndex: 60 }}>
+          <View style={{ marginBottom: compact ? 6 : 28, zIndex: 60 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={{ fontSize: 26, fontWeight: '900', color: '#000000', letterSpacing: -0.5 }}>Ритм<Text style={{ color: '#fa233b' }}>.</Text></Text>
             </View>
 
-            {!userProfile?.isLoggedIn ? (
+            {authLoading ? (
+              <View style={{ height: 34 }} />
+            ) : !userProfile?.isLoggedIn ? (
               <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
-                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
+                <Pressable onPress={() => router.push('/sign-in')} style={{ flex: 1, backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b' }}>Вход</Text>
                 </Pressable>
-                <Pressable onPress={() => {}} style={{ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
+                <Pressable onPress={() => router.push({ pathname: '/sign-in', params: { mode: 'register' } })} style={{ flex: 1, backgroundColor: '#fa233b', paddingVertical: 7, borderRadius: 12, alignItems: 'center', outlineStyle: 'none' as any }}>
                   <Text style={{ fontSize: 11, fontWeight: '700', color: '#ffffff' }}>Регистрация</Text>
                 </Pressable>
               </View>
             ) : (
               <Pressable onPress={() => setShowProfileMenu(!showProfileMenu)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, outlineStyle: 'none' as any }}>
-                <Image source={{ uri: userProfile.avatarUrl }} style={{ width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: '#fa233b' }} />
+                <AvatarCircle uri={userProfile.avatarUrl} name={userProfile.name} size={34} ring />
                 <View style={{ flex: 1 }}>
                   <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '800', color: '#000000' }}>{userProfile.name}</Text>
-                  <Text style={{ fontSize: 10, color: '#8e8e93' }}>Профиль ▼</Text>
+                  <Text style={{ fontSize: 10, color: '#8e8e93' }}>{showProfileMenu ? 'Профиль ▲' : 'Профиль ▼'}</Text>
                 </View>
               </Pressable>
             )}
+            {showProfileMenu && userProfile.isLoggedIn ? (
+              <View style={{ marginTop: 8, backgroundColor: '#ffffff', borderRadius: 12, padding: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3 }}>
+                <Pressable onPress={() => { setShowProfileMenu(false); router.push('/profile'); }} style={{ paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, outlineStyle: 'none' as any }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#1c1c1e' }}>Мой профиль</Text>
+                  <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{userProfile.phoneOrEmail}</Text>
+                </Pressable>
+                <Pressable onPress={async () => { setShowProfileMenu(false); await signOut(); }} style={{ paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, outlineStyle: 'none' as any }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#d70015' }}>Выйти</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
 
           <Text style={{ fontSize: 10, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12, paddingLeft: 4 }}>Медиатека</Text>
-          <View style={{ gap: 6 }}>
+          <View style={{ gap: 6, flexDirection: compact ? 'row' : 'column', flexWrap: 'wrap' }}>
             {[
               { id: 'main', label: 'Слушать' },
               { id: 'uploads', label: 'Загруженные' },
@@ -810,9 +963,12 @@ export default function CatalogScreen() {
         </View>
 
         {/* ОСНОВНОЙ КОНТЕНТ */}
-        <View style={{ flex: 1, paddingTop: 32, paddingHorizontal: 28, paddingBottom: 120, backgroundColor: '#f2f2f7' }}>
+        <View style={{ flex: 1, paddingTop: compact ? 10 : 32, paddingHorizontal: compact ? 12 : 28, paddingBottom: compact ? 145 : 120, backgroundColor: '#f2f2f7' }}>
+          {notice ? <Pressable accessibilityRole="button" accessibilityLabel="Закрыть уведомление" onPress={() => setNotice('')}>
+            <Text style={{ padding: 10, marginBottom: 8, borderRadius: 10, backgroundColor: '#fff', color: '#292930' }}>{notice} · Закрыть</Text>
+          </Pressable> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <Text style={{ fontSize: 32, fontWeight: '800', color: '#000000' }}>
+            <Text style={{ fontSize: compact ? 21 : 32, fontWeight: '800', color: '#000000', flexShrink: 1 }}>
               {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : 'Моя музыка'}
             </Text>
 
@@ -889,6 +1045,12 @@ export default function CatalogScreen() {
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
           {activeTab === 'main' && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              {resumePoint && !m.currentTrack && <PrimaryButton variant="soft" title={'Продолжить · ' + resumePoint.track.title + ' · ' + formatTime(resumePoint.seconds)} onPress={() => void safePlayTrack(resumePoint.track, [resumePoint.track], 'Моя музыка', resumePoint.seconds)} />}
+              {offlineList.length > 0 && <View style={{ gap: 6, marginBottom: 14 }}>
+                <Text style={{ fontWeight: '800' }}>Офлайн на этом устройстве</Text>
+                <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList)} />
+                <PrimaryButton title="Очистить офлайн-кэш треков" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить офлайн-кэш.'))} />
+              </View>}
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
                 <TextInput 
                   placeholder="Поиск музыки..." 
@@ -936,7 +1098,7 @@ export default function CatalogScreen() {
               <View style={{ marginBottom: 24 }}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>✨ Подборки</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ paddingVertical: 4 }}>
-                  {smartPlaylists.map((sp) => (
+                  {smartPlaylists.filter(sp => sp.tracks.length > 0).map((sp) => (
                     <Pressable 
                       key={sp.id} 
                       onPress={() => setSelectedPlaylistModal({ title: sp.title, tracks: sp.tracks })}
@@ -1077,6 +1239,13 @@ export default function CatalogScreen() {
           {/* ВКЛАДКА 3: МОЯ МУЗЫКА */}
           {activeTab === 'my_music' && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              {authUser && hasLegacyLibrary(authUser.id) && <PrimaryButton title="Перенести медиатеку из этого браузера" variant="soft" loading={importing} onPress={async () => {
+                if (importing) return;
+                setImporting(true);
+                try { await importLegacyLibrary(authUser.id); await refreshLibrary(); }
+                catch { setNotice('Не удалось завершить перенос. Его можно повторить.'); }
+                finally { setImporting(false); }
+              }} />}
               
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
                 Мои плейлисты ({userPlaylists.length})
@@ -1115,7 +1284,7 @@ export default function CatalogScreen() {
                 {userPlaylists.map((pl) => (
                   <Pressable 
                     key={pl.id}
-                    onPress={() => setSelectedPlaylistModal({ title: pl.title, tracks: pl.tracks })}
+                    onPress={() => setSelectedPlaylistModal(pl)}
                     style={({ pressed }) => ({ 
                       width: 140, 
                       height: 170,
@@ -1133,7 +1302,7 @@ export default function CatalogScreen() {
                     })}
                   >
                     <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
-                      <Text style={{ fontSize: 32 }}>📚</Text>
+                      {pl.cover ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
                     </View>
                     <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
                     <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
@@ -1186,25 +1355,27 @@ export default function CatalogScreen() {
         position: 'absolute',
         bottom: 20,
         alignSelf: 'center',
-        width: '78%',
+        width: '96%',
         maxWidth: 920,
-        height: 90, 
+        height: compact ? 126 : 90,
         backgroundColor: 'rgba(25, 25, 30, 0.45)', 
         backdropFilter: 'blur(35px) saturate(180%)' as any,
         borderRadius: 42,
         borderWidth: 1, 
         borderColor: 'rgba(255, 255, 255, 0.25)', 
-        flexDirection: 'row', 
+        flexDirection: compact ? 'column' : 'row',
         justifyContent: 'space-between', 
         alignItems: 'center', 
-        paddingHorizontal: 24, 
+        paddingHorizontal: compact ? 12 : 24,
+        paddingTop: compact ? 18 : 0,
+        paddingBottom: compact ? 7 : 0,
         boxShadow: '0 12px 35px rgba(0, 0, 0, 0.3)' as any,
         zIndex: 100
       }}>
         <View style={{ position: 'absolute', top: 8, left: 24, right: 24, height: 12, zIndex: 120, justifyContent: 'center' }}>
           <Pressable 
             ref={seekBarContainerRef} 
-            onPressIn={(e) => { setIsDraggingSeek(true); updateSeekPosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} 
+            onPressIn={(e) => { setIsDraggingSeek(true); updateSeekPosition(e.nativeEvent.pageX); }}
             style={{ height: '100%', width: '100%', justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}
           >
             {/* @ts-ignore */}
@@ -1227,10 +1398,10 @@ export default function CatalogScreen() {
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', width: 280, marginTop: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', width: compact ? '100%' : 260, marginTop: compact ? 0 : 8 }}>
           {m?.currentTrack ? (
             <>
-              <TrackCoverImage track={m.currentTrack} style={{ width: 54, height: 54, borderRadius: 14, marginRight: 14 }} />
+              <TrackCoverImage track={m.currentTrack} style={{ width: compact ? 38 : 54, height: compact ? 38 : 54, borderRadius: 14, marginRight: 14 }} />
               <View style={{ flex: 1, marginRight: 10 }}>
                 <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#ffffff' }}>{m.currentTrack.title}</Text>
                 <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b', marginTop: 3 }}>
@@ -1338,11 +1509,11 @@ export default function CatalogScreen() {
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, width: 240, marginTop: 8 }}>
+        <View style={{ display: compact ? 'none' : 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, width: 180, marginTop: 8 }}>
           <Pressable onPress={handleMuteToggle} style={{ padding: 4, outlineStyle: 'none' as any }}>
             <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={18} color="#ffffff" />
           </Pressable>
-          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX || e.nativeEvent.clientX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}>
+          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}>
             {/* @ts-ignore */}
             <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: 2 }}>
               <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
@@ -1381,6 +1552,7 @@ export default function CatalogScreen() {
               placeholderTextColor="#8e8e93"
               value={newPlaylistTitle}
               onChangeText={setNewPlaylistTitle}
+              maxLength={80}
               style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#ffffff', fontSize: 16, marginBottom: 20, outlineStyle: 'none' as any }}
             />
             <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -1445,8 +1617,8 @@ export default function CatalogScreen() {
                   shadowOpacity: 0.3,
                   shadowRadius: 8
                 }}>
-                  {selectedPlaylistModal.tracks[0]?.cover_url ? (
-                    <Image source={{ uri: selectedPlaylistModal.tracks[0].cover_url }} style={{ width: '100%', height: '100%' }} />
+                  {selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url ? (
+                    <Image source={{ uri: selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url || undefined }} style={{ width: '100%', height: '100%' }} />
                   ) : (
                     <Text style={{ fontSize: 42 }}>🎵</Text>
                   )}
@@ -1463,6 +1635,10 @@ export default function CatalogScreen() {
                   <Text style={{ fontSize: 13, color: '#8e8e93', fontWeight: '500', marginBottom: 14 }}>
                     {selectedPlaylistModal.tracks.length} треков • RITM Music
                   </Text>
+                  {selectedPlaylistModal.id && <PrimaryButton variant="soft" title="Редактировать" onPress={() => {
+                    const owned = userPlaylists.find(playlist => playlist.id === selectedPlaylistModal.id);
+                    if (owned) { setSelectedPlaylistModal(null); setPlaylistEdit(owned); }
+                  }} />}
 
                   {/* Кнопка «Слушать» (VK Blue) */}
                   {selectedPlaylistModal.tracks.length > 0 && (
@@ -1683,6 +1859,69 @@ export default function CatalogScreen() {
       </Modal>
 
       {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
+      <Modal animationType="fade" transparent visible={!!selectedTrackDetails} onRequestClose={() => setSelectedTrackDetails(null)}>
+        {selectedTrackDetails && (
+          <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.62)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <ScrollView style={{ width: '100%', maxWidth: 430, maxHeight: '94%', backgroundColor: '#1b1b20', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.13)' }}>
+              <View style={{ height: 190, backgroundColor: '#292930', justifyContent: 'center', alignItems: 'center' }}>
+                <TrackCoverImage track={selectedTrackDetails} style={{ width: '100%', height: '100%' }} />
+                <Pressable onPress={() => setSelectedTrackDetails(null)} style={{ position: 'absolute', top: 14, right: 14, padding: 8, backgroundColor: 'rgba(0,0,0,0.42)', borderRadius: 18 }}>
+                  <WebIcon name="close" size={20} color="#fff" />
+                </Pressable>
+              </View>
+              <View style={{ padding: 20 }}>
+                <Text style={{ fontSize: 22, fontWeight: '900', color: '#fff' }} numberOfLines={2}>{selectedTrackDetails.title}</Text>
+                <Text style={{ fontSize: 14, color: '#c5c5cb', marginTop: 5 }} numberOfLines={1}>{selectedTrackDetails.artist || 'Неизвестный исполнитель'}</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+                  <View style={{ backgroundColor: 'rgba(250,35,59,0.18)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 }}><Text style={{ color: '#ff7887', fontWeight: '700', fontSize: 12 }}>{selectedTrackDetails.genre || 'Без жанра'}</Text></View>
+                  <View style={{ backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 }}><Text style={{ color: '#d4d4d8', fontWeight: '700', fontSize: 12 }}>{formatTime(selectedTrackDetails.duration)}</Text></View>
+                </View>
+                <View style={{ marginTop: 18, gap: 8 }}>
+                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Исполнитель: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.artist || 'Неизвестен'}</Text></Text>
+                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Опубликован: <Text style={{ color: '#fff', fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
+                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Прослушиваний: <Text style={{ color: '#fff', fontWeight: '700' }}>{(playCounts[selectedTrackDetails.id] || 0).toLocaleString('ru-RU')}</Text></Text>
+                </View>
+                <Pressable onPress={() => { void safePlayTrack(selectedTrackDetails); setSelectedTrackDetails(null); }} style={{ marginTop: 20, backgroundColor: '#fa233b', paddingVertical: 13, borderRadius: 14, alignItems: 'center' }}>
+                  <Text style={{ color: '#fff', fontWeight: '900' }}>Слушать</Text>
+                </Pressable>
+                <View style={{ gap: 8, marginTop: 12 }}>
+                  {selectedTrackDetails.description ? <Text style={{ color: '#eee' }}>{selectedTrackDetails.description}</Text> : null}
+                  <PrimaryButton variant="soft" title={myMusicTracks.some(track => track.id === selectedTrackDetails.id) ? 'Убрать из избранного' : 'В избранное'} onPress={() => {
+                    if (!authUser) setSelectedTrackDetails(null);
+                    void toggleAddToMyMusic(selectedTrackDetails);
+                  }} />
+                  <PrimaryButton variant="soft" title="Добавить в плейлист" onPress={() => {
+                    setSelectedTrackMenu({ track: selectedTrackDetails, source: 'network' });
+                    setSelectedTrackDetails(null);
+                    setShowPlaylistSelector(true);
+                    setSelectedTrackIds([]);
+                  }} />
+                  {selectedTrackDetails.user_id && <PrimaryButton variant="soft" title="Страница автора" onPress={() => {
+                    setArtistId(selectedTrackDetails.user_id!); setSelectedTrackDetails(null);
+                  }} />}
+                  {Platform.OS === 'web' && selectedTrackDetails.url?.includes('/storage/v1/object/public/music-storage/') && <PrimaryButton variant="soft" title="Сохранить для офлайна" onPress={() => {
+                    void rememberOffline(selectedTrackDetails).then(() => {
+                      setOfflineList(offlineTracks()); setSelectedTrackDetails(null); setNotice('Трек сохранён для офлайна.');
+                    }).catch(error => { setSelectedTrackDetails(null); setNotice(error.message || 'Не удалось сохранить трек.'); });
+                  }} />}
+                  <PrimaryButton variant="soft" title="Пожаловаться" onPress={() => {
+                    setSelectedTrackDetails(null);
+                    if (!authUser) { router.push('/sign-in'); return; }
+                    setReportTrack(selectedTrackDetails); setReason('');
+                  }} />
+                  {selectedTrackDetails.genre && globalSearchResults.some(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre) ? <>
+                    <Text style={{ color: '#fff', fontWeight: '800' }}>Похожие треки</Text>
+                    <TrackList tracks={globalSearchResults.filter(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre).slice(0, 4)} play={track => {
+                      void safePlayTrack(track); setSelectedTrackDetails(null);
+                    }} />
+                  </> : null}
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        )}
+      </Modal>
+
       <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           {selectedTrackMenu && (
@@ -1703,6 +1942,14 @@ export default function CatalogScreen() {
                   <WebIcon name="close" size={20} color="#a1a1a6" />
                 </Pressable>
               </View>
+
+              <Pressable
+                onPress={() => { setSelectedTrackDetails(selectedTrackMenu.track); setSelectedTrackMenu(null); setShowPlaylistSelector(false); }}
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+              >
+                <Text style={{ color: '#fff', fontSize: 19, width: 20, textAlign: 'center' }}>i</Text>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#fff', marginLeft: 12 }}>О треке</Text>
+              </Pressable>
 
               <Pressable 
                 onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
@@ -1746,13 +1993,18 @@ export default function CatalogScreen() {
                   ))}
                 </View>
               )}
+              {showPlaylistSelector && userPlaylists.length === 0 && <PrimaryButton variant="soft" title={authUser ? 'Создать плейлист' : 'Войти'} onPress={() => {
+                setSelectedTrackMenu(null); setShowPlaylistSelector(false);
+                if (authUser) setShowCreatePlaylistModal(true);
+                else router.push('/sign-in');
+              }} />}
 
               <Pressable 
                 onPress={() => {
                   if (selectedTrackIds.length > 1) {
                     handleBatchAddToMyMusic();
                   } else {
-                    toggleAddToMyMusic(selectedTrackMenu.track);
+                    void toggleAddToMyMusic(selectedTrackMenu.track);
                     setSelectedTrackMenu(null);
                   }
                 }} 
@@ -1768,9 +2020,9 @@ export default function CatalogScreen() {
                 <Pressable 
                   onPress={() => {
                     if (selectedTrackIds.length > 1) {
-                      void handleBatchRemove(selectedTrackMenu.source);
+                      if (selectedTrackMenu.source !== 'network') void handleBatchRemove(selectedTrackMenu.source);
                     } else {
-                      void handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
+                      if (selectedTrackMenu.source !== 'network') void handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
                     }
                   }} 
                   style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
@@ -1785,6 +2037,30 @@ export default function CatalogScreen() {
           )}
         </View>
       </Modal>
+      {playlistEdit && <EditPlaylist playlist={playlistEdit} close={() => setPlaylistEdit(null)} onSave={() => {
+        setPlaylistEdit(null); void refreshLibrary();
+      }} />}
+      {artistId && <ArtistPanel id={artistId} viewer={authUser?.id} mapTrack={mapCloudTrack} close={() => setArtistId(null)} signIn={() => {
+        setArtistId(null); router.push('/sign-in');
+      }} play={(track, queue) => { setArtistId(null); void safePlayTrack(track, queue, 'Автор'); }} />}
+      {shared && <CollectionPanel title={shared.title} close={() => setShared(null)}>
+        {shared.cover && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}
+        {shared.tracks.length ? <TrackList tracks={shared.tracks} play={track => {
+          void safePlayTrack(track, shared.tracks, 'Общий плейлист'); setShared(null);
+        }} /> : <Text>В плейлисте пока нет доступных треков.</Text>}
+      </CollectionPanel>}
+      {reportTrack && <CollectionPanel title={'Жалоба · ' + reportTrack.title} close={() => setReportTrack(null)}>
+        <Field label="Причина жалобы" value={reason} onChangeText={setReason} maxLength={500} />
+        <PrimaryButton title="Отправить" loading={reportBusy} disabled={reason.trim().length < 5} onPress={async () => {
+          if (reportBusy || !supabase || !authUser) return;
+          setReportBusy(true);
+          const { error } = await supabase.from('ritm_reports').insert({ reporter: authUser.id, track_id: reportTrack.id, reason: reason.trim() });
+          setReportBusy(false);
+          if (error && error.code !== '23505') { setNotice('Не удалось отправить жалобу. Попробуйте ещё раз.'); return; }
+          setReportTrack(null);
+          setNotice(error ? 'Вы уже отправляли жалобу на этот трек.' : 'Жалоба отправлена.');
+        }} />
+      </CollectionPanel>}
     </View>
   );
 }

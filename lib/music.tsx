@@ -9,6 +9,7 @@ interface MusicContextType {
   eqGains: number[]; // 12 полос
   playTrack: (track: Track, queueIds?: string[], context?: string) => Promise<Track | void>;
   pauseTrack: () => Promise<void>;
+  clearTrack: () => void;
   resumeTrack: () => Promise<void>;
   setPlaybackSpeed: (speed: number) => void;
   setEqGain: (bandIndex: number, value: number) => void;
@@ -143,6 +144,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       eqGains,
       playTrack,
       pauseTrack,
+      clearTrack: () => { setCurrentTrack(null); setIsPlaying(false); },
       resumeTrack,
       setPlaybackSpeed,
       setEqGain,
@@ -165,6 +167,7 @@ export const useMusic = () => {
       eqGains: new Array(12).fill(0),
       playTrack: async () => {},
       pauseTrack: async () => {},
+      clearTrack: () => {},
       resumeTrack: async () => {},
       setPlaybackSpeed: () => {},
       setEqGain: () => {},

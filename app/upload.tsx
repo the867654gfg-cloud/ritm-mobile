@@ -1,352 +1,186 @@
-﻿import { useState } from 'react';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, Modal } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Platform, ScrollView, Text, View, Image } from 'react-native';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { COLORS, Field, Notice, PrimaryButton } from '../components/AuthUI';
+import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
+import { Draft, discardDraft, publishDraft, saveDraft } from '../lib/publishing';
 
-interface FileToUpload {
-  fileObj?: File | Blob | any;
-  uri?: string;
-  name: string;
-  size: number;
-  duration?: number;
-  coverBlob?: Blob | null;
-}
-
-// Извлечение длительности и обложки из MP3 в браузере
-async function extractMetadata(file: File): Promise<{ duration: number; coverBlob: Blob | null }> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const audio = document.createElement('audio');
-    audio.src = url;
-    audio.preload = 'metadata';
-
-    audio.onloadedmetadata = async () => {
-      const duration = audio.duration && !isNaN(audio.duration) ? Math.round(audio.duration) : 180;
-      URL.revokeObjectURL(url);
-
-      try {
-        const reader = new FileReader();
-        reader.onload = function (e) {
-          try {
-            const buffer = e.target?.result as ArrayBuffer;
-            if (!buffer) {
-              resolve({ duration, coverBlob: null });
-              return;
-            }
-            const bytes = new Uint8Array(buffer);
-            let foundIndex = -1;
-            let mimeType = 'image/jpeg';
-
-            for (let i = 0; i < bytes.length - 10; i++) {
-              if (
-                (bytes[i] === 0xff && bytes[i + 1] === 0xd8) || 
-                (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x47)
-              ) {
-                if (i > 0 && i < 100000) {
-                  foundIndex = i;
-                  if (bytes[i] === 0x89) mimeType = 'image/png';
-                  break;
-                }
-              }
-            }
-
-            if (foundIndex !== -1) {
-              const imageBytes = bytes.slice(foundIndex, foundIndex + 500000); 
-              const coverBlob = new Blob([imageBytes], { type: mimeType });
-              resolve({ duration, coverBlob });
-              return;
-            }
-            resolve({ duration, coverBlob: null });
-          } catch (err) {
-            resolve({ duration, coverBlob: null });
-          }
-        };
-        reader.readAsArrayBuffer(file.slice(0, 300000));
-      } catch (ex) {
-        resolve({ duration, coverBlob: null });
-      }
-    };
-
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({ duration: 180, coverBlob: null });
-    };
-  });
-}
+const limit = 50 * 1024 * 1024;
+const audioTypes: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg' };
 
 export default function UploadScreen() {
-  const [selectedFiles, setSelectedFiles] = useState<FileToUpload[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
-  const [resultModal, setResultModal] = useState<{ visible: boolean; successCount: number; errors: string[] }>({
-    visible: false,
-    successCount: 0,
-    errors: []
-  });
+  const { user, loading } = useAuth();
+  const [audio, setAudio] = useState<Blob>();
+  const [cover, setCover] = useState<Blob>();
+  const [preview, setPreview] = useState('');
+  const [artwork, setArtwork] = useState('');
+  const [duration, setDuration] = useState(0);
+  const [title, setTitle] = useState('');
+  const [artist, setArtist] = useState('');
+  const [genre, setGenre] = useState('');
+  const [description, setDescription] = useState('');
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [editing, setEditing] = useState<Draft>();
+  const [rights, setRights] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string }>();
 
-  const handlePickFiles = async () => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.accept = 'audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg';
-      
-      input.onchange = async (e: any) => {
-        const files: FileList = e.target.files;
-        if (!files || files.length === 0) return;
-
-        const newFiles: FileToUpload[] = [];
-        for (let i = 0; i < files.length; i++) {
-          const f = files[i];
-          const meta = await extractMetadata(f);
-          newFiles.push({
-            fileObj: f,
-            name: f.name,
-            size: f.size,
-            duration: meta.duration,
-            coverBlob: meta.coverBlob
-          });
-        }
-        setSelectedFiles(prev => [...prev, ...newFiles]);
-      };
-      input.click();
-    } else {
-      try {
-        const result = await DocumentPicker.getDocumentAsync({
-          type: 'audio/*',
-          multiple: true,
-          copyToCacheDirectory: true,
-        });
-
-        if (!result.canceled && result.assets) {
-          const newFiles: FileToUpload[] = result.assets.map(asset => ({
-            uri: asset.uri,
-            name: asset.name,
-            size: asset.size || 0,
-            duration: 180,
-            coverBlob: null
-          }));
-          setSelectedFiles(prev => [...prev, ...newFiles]);
-        }
-      } catch (err) {
-        console.error('Ошибка выбора файла:', err);
-      }
-    }
-  };
-
-  const handleStartUpload = async () => {
-    if (selectedFiles.length === 0) return;
-
-    setIsUploading(true);
-    setUploadProgress({ current: 0, total: selectedFiles.length });
-
-    let successCount = 0;
-    const errors: string[] = [];
-
-    // Получаем текущего пользователя или используем публичного
-    const { data: { user } } = await supabase.auth.getUser();
-    const userId = user?.id || 'public-user';
-
-    for (let i = 0; i < selectedFiles.length; i++) {
-      const item = selectedFiles[i];
-      setUploadProgress({ current: i + 1, total: selectedFiles.length });
-
-      try {
-        let uploadPayload: Blob | File;
-
-        if (Platform.OS === 'web') {
-          if (!item.fileObj) throw new Error('Файл не выбран');
-          uploadPayload = item.fileObj;
-        } else {
-          if (!item.uri) throw new Error('URI файла не найден');
-          const response = await fetch(item.uri);
-          uploadPayload = await response.blob();
-        }
-
-        const cleanFileName = item.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const fileExt = cleanFileName.split('.').pop() || 'mp3';
-        const uniqueId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const storagePath = `${userId}/${uniqueId}_${cleanFileName}`;
-
-        // 1. Загрузка аудиофайла
-        const { error: storageError } = await supabase.storage
-          .from('music-storage')
-          .upload(storagePath, uploadPayload, {
-            contentType: item.fileObj?.type || `audio/${fileExt}`,
-            upsert: true
-          });
-
-        if (storageError) throw storageError;
-
-        const { data: urlData } = supabase.storage
-          .from('music-storage')
-          .getPublicUrl(storagePath);
-        const publicAudioUrl = urlData.publicUrl;
-
-        // 2. Загрузка обложки (если есть)
-        let publicCoverUrl = '';
-        if (item.coverBlob) {
-          const coverPath = `${userId}/${uniqueId}_cover.jpg`;
-          const { error: coverStorageError } = await supabase.storage
-            .from('music-storage')
-            .upload(coverPath, item.coverBlob, {
-              contentType: 'image/jpeg',
-              upsert: true
-            });
-
-          if (!coverStorageError) {
-            const { data: coverUrlData } = supabase.storage
-              .from('music-storage')
-              .getPublicUrl(coverPath);
-            publicCoverUrl = coverUrlData.publicUrl;
-          }
-        }
-
-        const nameWithoutExt = item.name.replace(/\.[^/.]+$/, '');
-        const title = nameWithoutExt.trim();
-
-        // 3. Запись метаданных в базу Supabase
-        const { error: dbError } = await supabase
-          .from('tracks')
-          .insert({
-            id: uniqueId,
-            title: title,
-            audio_url: publicAudioUrl,
-            cover_key: publicCoverUrl || null,
-            duration: item.duration ? Math.round(item.duration) : 180,
-            genre: 'Deep House',
-            ...(user?.id ? { user_id: user.id } : {}),
-          });
-
-        if (dbError) throw dbError;
-
-        successCount++;
-      } catch (err: any) {
-        errors.push(`${item.name}: ${err.message || 'Ошибка сети/доступа'}`);
-      }
-    }
-
-    setIsUploading(false);
-    setSelectedFiles([]);
-    setResultModal({
-      visible: true,
-      successCount,
-      errors
+  useEffect(() => {
+    setDrafts([]);
+    setEditing(undefined);
+    const db = supabase;
+    if (!db || !user) return;
+    let active = true;
+    void db.from('ritm_drafts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).then(({ data, error }) => {
+      if (!active) return;
+      if (error) setMessage({ kind: 'error', text: 'Не удалось загрузить черновики.' });
+      else setDrafts(data ?? []);
     });
-  };
+    return () => { active = false; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const url = audio ? URL.createObjectURL(audio) : '';
+    setPreview(url);
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [audio]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const url = cover ? URL.createObjectURL(cover) : '';
+    setArtwork(url);
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [cover]);
+
+  async function pick(image: boolean) {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: image ? 'image/*' : 'audio/*' });
+      if (result.canceled) return;
+      const file = result.assets[0];
+      const blob = file.file ?? await (await fetch(file.uri)).blob();
+      const type = image ? blob.type : audioTypes[file.name.split('.').pop()?.toLowerCase() ?? ''];
+      const allowed = image ? ['image/jpeg', 'image/png', 'image/webp'].includes(type) : Boolean(type);
+      if (!allowed || !blob.size || blob.size > (image ? 5 * 1024 * 1024 : limit)) {
+        throw new Error(image ? 'Выберите JPG, PNG или WebP до 5 МБ.' : 'Выберите MP3, WAV, FLAC, M4A, AAC или OGG до 50 МБ.');
+      }
+      if (image) setCover(blob);
+      else {
+        setAudio(blob.slice(0, blob.size, type));
+        setDuration(0);
+        setTitle(file.name.replace(/\.[^.]+$/, '').slice(0, 150));
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: (error as Error).message });
+    }
+  }
+
+  async function addDraftBatch() {
+    if (!user || busy) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'audio/*', multiple: true });
+      if (result.canceled) return;
+      setBusy(true);
+      const saved: Draft[] = [];
+      let rejected = 0;
+      for (const file of result.assets) {
+        const type = audioTypes[file.name.split('.').pop()?.toLowerCase() ?? ''];
+        if (!type || (file.size ?? 0) > limit) { rejected++; continue; }
+        try {
+          const blob = file.file ?? await (await fetch(file.uri)).blob();
+          if (!blob.size || blob.size > limit) { rejected++; continue; }
+          const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 150);
+          saved.push(await saveDraft(user.id, { title: name || 'Без названия', artist: '', genre: '', description: '', duration: 0 }, blob.slice(0, blob.size, type)));
+        } catch { rejected++; }
+      }
+      setDrafts(previous => [...saved, ...previous]);
+      setMessage({ kind: rejected ? 'error' : 'success', text: 'Черновиков сохранено: ' + saved.length + (rejected ? '. Не удалось сохранить: ' + rejected : '.') });
+    } catch { setMessage({ kind: 'error', text: 'Не удалось выбрать файлы.' }); }
+    finally { setBusy(false); }
+  }
+
+  async function submit(publish: boolean) {
+    if (!user || !supabase || !title.trim() || (!editing && !audio) || busy || (publish && !rights)) return;
+    setBusy(true);
+    setMessage(undefined);
+    try {
+      const fields = { title: title.trim(), artist: artist.trim(), genre: genre.trim(), description: description.trim(), duration };
+      let draft = editing;
+      if (draft) {
+        const result = await supabase.from('ritm_drafts').update(fields).eq('id', draft.id).select().single();
+        if (result.error) throw result.error;
+        draft = result.data;
+      } else if (audio) draft = await saveDraft(user.id, fields, audio, cover);
+      if (!draft) return;
+      const saved = draft;
+      setEditing(saved);
+      setDrafts(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      setAudio(undefined);
+      setCover(undefined);
+      if (publish) {
+        await publishDraft(saved);
+        await discardDraft(saved);
+        setEditing(undefined);
+        setDrafts(previous => previous.filter(item => item.id !== saved.id));
+        setTitle('');
+        setRights(false);
+      }
+      setMessage({ kind: 'success', text: publish ? 'Трек опубликован.' : 'Черновик сохранён в аккаунте.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: (error as Error).message || 'Операция не завершилась. Попробуйте ещё раз.' });
+    } finally { setBusy(false); }
+  }
+
+  async function openDraft(draft: Draft) {
+    setEditing(draft);
+    setAudio(undefined);
+    setCover(undefined);
+    setTitle(draft.title);
+    setArtist(draft.artist || '');
+    setGenre(draft.genre || '');
+    setDescription(draft.description || '');
+    setDuration(draft.duration);
+    setRights(false);
+    const storage = supabase?.storage.from('ritm-drafts');
+    setPreview((await storage?.createSignedUrl(draft.audio_path, 600))?.data?.signedUrl ?? '');
+    setArtwork(draft.cover_path ? (await storage?.createSignedUrl(draft.cover_path, 600))?.data?.signedUrl ?? '' : '');
+  }
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#0e0e11', padding: 24 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
-        <Pressable onPress={() => router.back()} style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}>
-          <Text style={{ color: '#ffffff', fontWeight: '700' }}>← Назад</Text>
-        </Pressable>
-        <Text style={{ fontSize: 22, fontWeight: '900', color: '#ffffff' }}>Загрузить треки в облако</Text>
-        <View style={{ width: 80 }} />
-      </View>
-
-      <Pressable 
-        onPress={handlePickFiles}
-        disabled={isUploading}
-        style={{
-          borderWidth: 2,
-          borderColor: '#fa233b',
-          borderStyle: 'dashed',
-          borderRadius: 20,
-          padding: 32,
-          alignItems: 'center',
-          backgroundColor: 'rgba(250, 35, 59, 0.05)',
-          marginBottom: 24
-        }}
-      >
-        <Text style={{ fontSize: 40, marginBottom: 12 }}>🎵</Text>
-        <Text style={{ fontSize: 18, fontWeight: '800', color: '#ffffff', marginBottom: 6 }}>Выберите аудиофайлы</Text>
-        <Text style={{ fontSize: 13, color: '#8e8e93', textAlign: 'center' }}>Поддерживаются MP3 с обложками, WAV, FLAC, M4A</Text>
-      </Pressable>
-
-      {selectedFiles.length > 0 && (
-        <View style={{ flex: 1, marginBottom: 20 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <Text style={{ color: '#8e8e93', fontSize: 12, fontWeight: '700', textTransform: 'uppercase' }}>
-              Выбрано файлов: {selectedFiles.length}
-            </Text>
-            {!isUploading && (
-              <Pressable onPress={() => setSelectedFiles([])}>
-                <Text style={{ color: '#fa233b', fontSize: 13, fontWeight: '700' }}>Очистить</Text>
-              </Pressable>
-            )}
-          </View>
-
-          <ScrollView style={{ flex: 1 }}>
-            {selectedFiles.map((file, idx) => (
-              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)', padding: 12, borderRadius: 12, marginBottom: 8 }}>
-                <Text style={{ fontSize: 18, marginRight: 12 }}>{file.coverBlob ? '🖼️' : '🎶'}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{file.name}</Text>
-                  <Text style={{ color: '#8e8e93', fontSize: 11, marginTop: 2 }}>
-                    {(file.size / (1024 * 1024)).toFixed(2)} MB • {file.coverBlob ? 'Обложка найдена ✓' : 'Без обложки'}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-
-          <Pressable 
-            onPress={handleStartUpload}
-            disabled={isUploading}
-            style={{
-              backgroundColor: '#fa233b',
-              paddingVertical: 16,
-              borderRadius: 16,
-              alignItems: 'center',
-              marginTop: 12,
-              opacity: isUploading ? 0.6 : 1
-            }}
-          >
-            {isUploading ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <ActivityIndicator color="#ffffff" size="small" />
-                <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 15 }}>
-                  Загрузка {uploadProgress.current} из {uploadProgress.total}...
-                </Text>
-              </View>
-            ) : (
-              <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 16 }}>Начать загрузку</Text>
-            )}
-          </Pressable>
-        </View>
-      )}
-
-      <Modal animationType="fade" transparent visible={resultModal.visible}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 420, backgroundColor: '#1c1c1e', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
-            <Text style={{ fontSize: 20, fontWeight: '800', color: '#ffffff', marginBottom: 12 }}>Результат загрузки</Text>
-            <Text style={{ color: '#ffffff', fontSize: 15, marginBottom: 12 }}>
-              Успешно загружено: <Text style={{ color: '#4cd964', fontWeight: '800' }}>{resultModal.successCount}</Text>
-            </Text>
-
-            {resultModal.errors.length > 0 && (
-              <View style={{ backgroundColor: 'rgba(250, 35, 59, 0.15)', padding: 12, borderRadius: 12, marginBottom: 16 }}>
-                <Text style={{ color: '#fa233b', fontWeight: '800', fontSize: 13, marginBottom: 6 }}>Ошибки:</Text>
-                {resultModal.errors.map((err, i) => (
-                  <Text key={i} style={{ color: '#ffffff', fontSize: 12, marginBottom: 4 }}>• {err}</Text>
-                ))}
-              </View>
-            )}
-
-            <Pressable 
-              onPress={() => {
-                setResultModal({ visible: false, successCount: 0, errors: [] });
-                router.replace('/(tabs)');
-              }}
-              style={{ backgroundColor: '#fa233b', paddingVertical: 12, borderRadius: 12, alignItems: 'center' }}
-            >
-              <Text style={{ color: '#ffffff', fontWeight: '800' }}>Перейти к трекам</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-    </View>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <ScrollView contentContainerStyle={{ padding: 20, gap: 14, width: '100%', maxWidth: 660, alignSelf: 'center' }}>
+        <PrimaryButton title="Назад" variant="soft" onPress={() => router.canGoBack() ? router.back() : router.replace('/')} />
+        <Text accessibilityRole="header" style={{ fontSize: 28, fontWeight: '900' }}>Публикация трека</Text>
+        {message && <Notice kind={message.kind} text={message.text} />}
+        {!loading && !user && <PrimaryButton title="Войти для загрузки" onPress={() => router.replace('/sign-in')} />}
+        {user && <>
+          {drafts.map(draft => <PrimaryButton key={draft.id} variant="soft" title={'Черновик · ' + draft.title} disabled={busy} onPress={() => void openDraft(draft)} />)}
+          {editing && <PrimaryButton title="Создать новый трек" variant="soft" disabled={busy} onPress={() => {
+            setEditing(undefined); setTitle(''); setArtist(''); setGenre(''); setDescription(''); setPreview(''); setArtwork(''); setRights(false);
+          }} />}
+          {!editing && <View style={{ gap: 8 }}>
+            <PrimaryButton title="Выбрать аудио" disabled={busy} onPress={() => void pick(false)} />
+            <PrimaryButton title="Загрузить несколько в черновики" variant="soft" disabled={busy} onPress={() => void addDraftBatch()} />
+            <PrimaryButton title="Выбрать обложку" variant="soft" disabled={busy} onPress={() => void pick(true)} />
+          </View>}
+          {artwork ? <Image source={{ uri: artwork }} style={{ width: 130, height: 130, borderRadius: 14 }} /> : null}
+          {Platform.OS === 'web' && preview ? <audio key={preview} controls src={preview} onLoadedMetadata={event => {
+            const value = event.currentTarget.duration;
+            if (Number.isFinite(value)) setDuration(Math.round(value));
+          }} /> : null}
+          <Field label="Название" value={title} onChangeText={setTitle} maxLength={150} />
+          <Field label="Исполнитель" value={artist} onChangeText={setArtist} maxLength={100} />
+          <Field label="Жанр" value={genre} onChangeText={setGenre} maxLength={80} />
+          <Field label="Описание и теги" value={description} onChangeText={setDescription} maxLength={1000} />
+          <Text>Публикуйте только записи, на распространение которых у вас есть право. Черновик доступен только вам, опубликованный трек появляется в каталоге.</Text>
+          <PrimaryButton title={(rights ? '☑ ' : '☐ ') + 'У меня есть права на публикацию'} variant="soft" onPress={() => setRights(!rights)} />
+          <PrimaryButton title="Сохранить черновик" variant="soft" disabled={!title.trim() || (!editing && !audio) || busy} onPress={() => void submit(false)} />
+          <PrimaryButton title="Опубликовать" loading={busy} disabled={!rights || !title.trim() || (!editing && !audio)} onPress={() => void submit(true)} />
+        </>}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
