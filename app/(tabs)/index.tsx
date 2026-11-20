@@ -1,9 +1,9 @@
 import { RememberedScroll } from '../../components/RememberedScroll';
 import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
-import { createContext, useContext, useState, useRef, useMemo, useEffect } from 'react';
+import { createContext, useContext, useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useMusic } from '../../lib/music';
 import { Track } from '../../lib/music-data';
 import { supabase } from '../../lib/supabase';
@@ -414,7 +414,7 @@ function CatalogScreen() {
   const searchAbortRef = useRef<AbortController | null>(null);
 
 
-  const loadCloudTracks = async () => {
+  const loadCloudTracks = useCallback(async () => {
     if (!supabase) return;
     if (!authUser) return;
     try {
@@ -431,9 +431,11 @@ function CatalogScreen() {
         setCloudUploadedTracks(mapped);
       }
     } catch (e) {}
-  };
+  }, [authUser?.id]);
 
-  useEffect(() => { if (activeTab === 'uploads') void loadCloudTracks(); }, [activeTab]);
+  useFocusEffect(useCallback(() => {
+    if (activeTab === 'uploads') void loadCloudTracks();
+  }, [activeTab, loadCloudTracks]));
 
   const refreshLibrary = async () => {
     if (!authUser) return;
