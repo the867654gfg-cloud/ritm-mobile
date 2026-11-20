@@ -12,6 +12,8 @@ type Props = {
   repeat: boolean;
   seek: (time: number) => void;
   close: () => void;
+  kiosk?: boolean;
+  kioskAction?: () => void;
   previous: () => void;
   next: () => void;
   togglePlay: () => void;
@@ -29,10 +31,11 @@ function clock(seconds: number) {
 export function FullPlayer(props: Props) {
   const { width, height } = useWindowDimensions();
   const artSize = Math.min(width - 48, 420, Math.max(145, height - 375));
+  const buttonSize = props.kiosk ? 64 : 46;
   const position = Math.min(props.time, Math.max(0, props.duration));
 
   function control(label: string, name: string, action: () => void, size: number, selected?: boolean) {
-    const primary = size > 54;
+    const primary = name === 'play' || name === 'pause';
     return <Pressable accessibilityRole="button" accessibilityLabel={label}
       accessibilityState={selected === undefined ? undefined : { selected }} onPress={action}
       style={{ width: size, height: size, borderRadius: size / 2, alignItems: 'center', justifyContent: 'center',
@@ -56,7 +59,7 @@ export function FullPlayer(props: Props) {
         <View style={[{ width: '100%', maxWidth: 525, paddingHorizontal: 24, alignItems: 'center', gap: 17 }, safeArea] as any}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
             <Text accessibilityRole="header" style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Сейчас играет</Text>
-            {control('Свернуть плеер', 'close', props.close, 44)}
+            {props.kiosk ? <Pressable accessibilityRole="button" onPress={props.kioskAction}><Text style={{ color: '#fff', padding: 12 }}>Выйти из киоска</Text></Pressable> : control('Свернуть плеер', 'close', props.close, 44)}
           </View>
           <View style={{ width: artSize, height: artSize, borderRadius: 27, overflow: 'hidden', backgroundColor: '#33313a' }}>
             {props.cover}
@@ -76,18 +79,21 @@ export function FullPlayer(props: Props) {
             </View>
           </View>
           <View style={{ width: '100%', maxWidth: 350, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            {control('Перемешать', 'shuffle', props.toggleShuffle, 43, props.shuffle)}
-            {control('Предыдущий трек', 'play-skip-back', props.previous, 46)}
-            {control(props.playing ? 'Пауза' : 'Воспроизвести', props.playing ? 'pause' : 'play', props.togglePlay, 65)}
-            {control('Следующий трек', 'play-skip-forward', props.next, 46)}
-            {control('Повтор трека', 'repeat', props.toggleRepeat, 43, props.repeat)}
+            {!props.kiosk && control('Перемешать', 'shuffle', props.toggleShuffle, 43, props.shuffle)}
+            {control('Предыдущий трек', 'play-skip-back', props.previous, buttonSize)}
+            {control(props.playing ? 'Пауза' : 'Воспроизвести', props.playing ? 'pause' : 'play', props.togglePlay, props.kiosk ? 86 : 65)}
+            {control('Следующий трек', 'play-skip-forward', props.next, buttonSize)}
+            {!props.kiosk && control('Повтор трека', 'repeat', props.toggleRepeat, 43, props.repeat)}
           </View>
-          <View style={{ flexDirection: 'row', gap: 12 }}>
+          {!props.kiosk && <View style={{ flexDirection: 'row', gap: 12 }}>
             <Pressable accessibilityRole="button" onPress={props.equalizer}
               style={{ paddingVertical: 12, paddingHorizontal: 18, borderRadius: 16, backgroundColor: '#ffffff13' }}>
               <Text style={{ color: '#fff', fontWeight: '700' }}>Эквалайзер</Text>
             </Pressable>
-          </View>
+            {props.kioskAction && <Pressable accessibilityRole="button" onPress={props.kioskAction} style={{ padding: 12 }}>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>Режим киоска</Text>
+            </Pressable>}
+          </View>}
         </View>
       </ScrollView>
     </View>
