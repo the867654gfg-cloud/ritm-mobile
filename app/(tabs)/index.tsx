@@ -1806,7 +1806,8 @@ function CatalogScreen() {
           <PrimaryButton title="Закрыть" variant="soft" onPress={() => setShowUploadPanel(false)} />
         </View>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, gap: 10 }}>
-          <UploadForm userId={authUser.id} onPublished={() => {
+          <UploadForm userId={authUser.id} onPublished={playlistCreated => {
+            if (playlistCreated) { void refreshLibrary(); return; }
             void loadCloudTracks();
             searchCatalog.current = undefined;
             setCatalogRevision(value => value + 1);
@@ -2031,7 +2032,7 @@ function CatalogScreen() {
             width: '100%', 
             maxWidth: 680, 
             maxHeight: '85%', 
-            backgroundColor: '#19191d', 
+            backgroundColor: 'rgba(66, 66, 72, 0.99)',
             borderRadius: 28, 
             padding: 28, 
             borderWidth: 1, 

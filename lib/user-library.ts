@@ -71,6 +71,16 @@ export async function createUserPlaylist(userId: string, title: string): Promise
   return error || !data ? null : { id: data.id, title: data.title, tracks: [] };
 }
 
+export async function saveUploadPlaylist(userId: string, playlist: UserPlaylist) {
+  if (!supabase) throw new Error('Сервис публикации недоступен.');
+  const { error } = await supabase.from('user_playlists').upsert({
+    id: playlist.id, user_id: userId, title: playlist.title, cover_url: playlist.cover ?? null,
+  }, { onConflict: 'id', ignoreDuplicates: true });
+  if (error || !await addTracksToPlaylist(userId, playlist.id, playlist.tracks, 0)) {
+    throw new Error('Песни опубликованы. Нажми «Опубликовать» ещё раз, чтобы сохранить плейлист.');
+  }
+}
+
 export async function addTracksToPlaylist(userId: string, playlistId: string, tracks: Track[], currentSize: number): Promise<boolean> {
   if (!supabase || tracks.length === 0) return true;
   const rows = tracks.map((track, index) => ({ user_id: userId, playlist_id: playlistId, track_id: track.id, track_data: track, position: currentSize + index }));

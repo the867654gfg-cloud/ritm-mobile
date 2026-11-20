@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Platform, Text, View, Image } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Field, Notice, PrimaryButton } from './AuthUI';
-import { publishTrack, type TrackFields } from '../lib/publishing';
+import { publishTrack, uploadPlaylistCover, type TrackFields } from '../lib/publishing';
+import { saveUploadPlaylist, type UserPlaylist } from '../lib/user-library';
 import { getWebFileContentType } from '../lib/track-cover';
 import { audioTags } from '../lib/audio-tags';
 import { TrackVersionPicker } from './TrackVersionPicker';
@@ -23,7 +24,7 @@ function usePreview(blob?: Blob) {
   return url;
 }
 
-export function UploadForm({ userId, onPublished }: { userId: string; onPublished?: () => void }) {
+export function UploadForm({ userId, onPublished }: { userId: string; onPublished?: (playlistCreated?: boolean) => void }) {
   const [tracks, setTracks] = useState<SelectedTrack[]>([]);
   const [editingId, setEditingId] = useState<string>();
   const [rights, setRights] = useState(false);
@@ -31,6 +32,15 @@ export function UploadForm({ userId, onPublished }: { userId: string; onPublishe
   const [progress, setProgress] = useState('');
   const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string }>();
   const operation = useRef(false);
+  const playlistJob = useRef<UserPlaylist>();
+  const [createPlaylist, setCreatePlaylist] = useState(false);
+  const [playlistTitle, setPlaylistTitle] = useState('');
+  const [playlistJpeg, setPlaylistJpeg] = useState<Blob>();
+  const playlistArtwork = usePreview(playlistJpeg);
+  const canCreatePlaylist = tracks.length >= 6 || Boolean(playlistJob.current);
+  const wantsPlaylist = canCreatePlaylist && createPlaylist;
+  const canSubmit = rights && (tracks.length > 0 || Boolean(playlistJob.current?.tracks.length)) &&
+    tracks.every(track => track.title.trim()) && (!wantsPlaylist || Boolean(playlistTitle.trim()));
   const editing = tracks.find(track => track.id === editingId);
   const preview = usePreview(editing?.audio);
   const artwork = usePreview(editing?.cover);
@@ -87,17 +97,40 @@ export function UploadForm({ userId, onPublished }: { userId: string; onPublishe
     });
   }
 
-  function submit() {
-    if (!rights || !tracks.length || tracks.some(track => !track.title.trim())) return;
+  function pickPlaylistCover() {
     void run(async () => {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'image/jpeg' });
+      if (result.canceled) return;
+      const file = result.assets[0];
+      if (!/\.jpe?g$/i.test(file.name)) throw new Error('Выбери JPEG до 5 МБ.');
+      const blob = file.file ?? await (await fetch(file.uri)).blob();
+      const jpeg = blob.slice(0, blob.size, 'image/jpeg');
+      await getWebFileContentType(jpeg);
+      setPlaylistJpeg(jpeg);
+    });
+  }
+
+  function submit() {
+    if (!canSubmit) return;
+    void run(async () => {
+      if (wantsPlaylist && !playlistJob.current) {
+        playlistJob.current = { id: crypto.randomUUID(), title: playlistTitle.trim(), tracks: [] };
+      }
+      const playlist = playlistJob.current;
+      if (playlist && playlistJpeg && !playlist.cover) {
+        setProgress('Загружаем общую обложку…');
+        playlist.cover = await uploadPlaylistCover(userId, playlist.id, playlist.id, playlistJpeg);
+      }
       let published = 0;
       const failed: string[] = [];
       for (const [index, track] of tracks.entries()) {
         setProgress('Публикация ' + (index + 1) + ' из ' + tracks.length + ' · ' + track.title);
         try {
           const { audio, cover, id, filename, ...fields } = track;
-          await publishTrack(userId, id, { ...fields, title: fields.title.trim(), artist: fields.artist.trim(),
-            album: fields.album.trim(), genre: fields.genre.trim(), description: fields.description.trim() }, audio, cover);
+          const metadata = { ...fields, title: fields.title.trim(), artist: fields.artist.trim(),
+            album: fields.album.trim(), genre: fields.genre.trim(), description: fields.description.trim() };
+          const stored = await publishTrack(userId, id, metadata, audio, cover, playlist?.cover);
+          playlist?.tracks.push({ ...metadata, ...stored, id, user_id: userId });
           published++;
           setTracks(previous => previous.filter(item => item.id !== id));
         } catch { failed.push(track.title); }
@@ -106,16 +139,38 @@ export function UploadForm({ userId, onPublished }: { userId: string; onPublishe
       if (failed.length) {
         setMessage({ kind: 'error', text: 'Опубликовано: ' + published + '. Осталось в списке: ' + failed.length + '. Проверь подключение и попробуй снова.' });
       } else {
+        if (playlist) {
+          setProgress('Сохраняем плейлист…');
+          await saveUploadPlaylist(userId, playlist);
+          playlistJob.current = undefined;
+          setCreatePlaylist(false);
+          setPlaylistTitle('');
+          setPlaylistJpeg(undefined);
+          onPublished?.(true);
+        }
         setRights(false);
         setEditingId(undefined);
-        setMessage({ kind: 'success', text: 'Опубликовано треков: ' + published + '.' });
+        setMessage({ kind: 'success', text: playlist
+          ? 'Плейлист «' + playlist.title + '» создан. Треков: ' + playlist.tracks.length + '.'
+          : 'Опубликовано треков: ' + published + '.' });
       }
     });
   }
 
   return <>
-    <PrimaryButton title="Выбрать аудио" disabled={busy} onPress={pickAudio} />
+    <PrimaryButton title="Выбрать аудио" disabled={busy || Boolean(playlistJob.current)} onPress={pickAudio} />
     <Text accessibilityLiveRegion="polite" style={{ fontWeight: '700' }}>Выбрано песен: {tracks.length}</Text>
+    {canCreatePlaylist && <View style={{ gap: 8, padding: 12, borderRadius: 14, backgroundColor: '#fff' }}>
+      <PrimaryButton title={(createPlaylist ? '☑ ' : '☐ ') + 'Создать плейлист'} variant="soft"
+        disabled={busy || Boolean(playlistJob.current)} onPress={() => setCreatePlaylist(!createPlaylist)} />
+      {wantsPlaylist && <>
+        <Field label="Название плейлиста" value={playlistTitle} onChangeText={setPlaylistTitle} maxLength={80}
+          editable={!busy && !playlistJob.current} />
+        <PrimaryButton title="Выбрать общую обложку JPEG" variant="soft"
+          disabled={busy || Boolean(playlistJob.current)} onPress={pickPlaylistCover} />
+        {playlistArtwork && <Image accessibilityLabel="Общая обложка" source={{ uri: playlistArtwork }} style={{ width: 100, height: 100, borderRadius: 12 }} />}
+      </>}
+    </View>}
     {tracks.map(track => <View key={track.id} style={{ gap: 8, borderRadius: 14, padding: 12, backgroundColor: '#fff' }}>
       <Text style={{ fontWeight: '700' }}>{track.title || track.filename}</Text>
       {track.title !== track.filename && <Text style={{ color: '#62626e' }}>{track.filename}</Text>}
@@ -123,7 +178,10 @@ export function UploadForm({ userId, onPublished }: { userId: string; onPublishe
         <PrimaryButton title={editingId === track.id ? 'Свернуть' : 'Редактировать'} variant="soft" disabled={busy}
           onPress={() => setEditingId(editingId === track.id ? undefined : track.id)} />
         <PrimaryButton title="Убрать из списка" variant="soft" disabled={busy}
-          onPress={() => setTracks(previous => previous.filter(item => item.id !== track.id))} />
+          onPress={() => {
+            if (tracks.length === 1 && !playlistJob.current?.tracks.length) playlistJob.current = undefined;
+            setTracks(previous => previous.filter(item => item.id !== track.id));
+          }} />
       </View>
       {editingId === track.id && <>
         <PrimaryButton title="Выбрать обложку" variant="soft" disabled={busy} onPress={() => pickCover(track.id)} />
@@ -144,6 +202,6 @@ export function UploadForm({ userId, onPublished }: { userId: string; onPublishe
     <PrimaryButton title={(rights ? '☑ ' : '☐ ') + 'У меня есть права на публикацию'} variant="soft" disabled={busy} onPress={() => setRights(!rights)} />
     {!!progress && <Text accessibilityLiveRegion="polite">{progress}</Text>}
     {message && <Notice kind={message.kind} text={message.text} />}
-    <PrimaryButton title="Опубликовать" loading={Boolean(progress)} disabled={busy || !rights || !tracks.length || tracks.some(track => !track.title.trim())} onPress={submit} />
+    <PrimaryButton title="Опубликовать" loading={Boolean(progress)} disabled={busy || !canSubmit} onPress={submit} />
   </>;
 }
