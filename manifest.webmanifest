@@ -1,0 +1,12 @@
+{
+  "name": "Ритм.",
+  "short_name": "Ритм",
+  "description": "Музыкальный плеер и личная медиатека",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#f2f2f7",
+  "background_color": "#f2f2f7",
+  "icons": [{ "src": "./ritm-icon.png", "sizes": "512x512", "type": "image/png" }]
+}
