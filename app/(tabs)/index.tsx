@@ -9,7 +9,6 @@ import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
 import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
 import { ArtistPanel } from '../../components/ArtistPanel';
 import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
-import { ExternalMusicSearch } from '../../components/ExternalMusicSearch';
 import { searchScore } from '../../lib/catalog-search';
 import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
@@ -285,11 +284,6 @@ function CatalogScreen() {
   }, [recentlyPlayed]);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [externalRequest, setExternalRequest] = useState<{ term: string; sequence: number } | null>(null);
-  const startExternalSearch = () => {
-    const term = searchQuery.trim();
-    if (term.length >= 2) setExternalRequest(previous => ({ term, sequence: (previous?.sequence ?? 0) + 1 }));
-  };
   const [selectedGenre, setSelectedGenre] = useState<string>('Все жанры');
 
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
@@ -1187,7 +1181,6 @@ function CatalogScreen() {
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
-                  onSubmitEditing={startExternalSearch}
                   returnKeyType="search"
                   maxLength={150}
                   style={{ flex: 1, fontSize: 15, color: '#000000', outlineStyle: 'none' as any }}
@@ -1199,7 +1192,6 @@ function CatalogScreen() {
                 )}
               </View>
 
-              <ExternalMusicSearch query={searchQuery.trim()} request={externalRequest} start={startExternalSearch} />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20, paddingVertical: 4 }}>
                 {GENRES.map((g) => {
                   const isSelected = selectedGenre === g;
