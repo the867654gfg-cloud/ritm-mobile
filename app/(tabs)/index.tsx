@@ -1,5 +1,3 @@
-import { HomeLibraryPanel } from '../../components/HomeLibraryPanel';
-import type { HomeLibrary } from '../../lib/home-library';
 import { RememberedScroll } from '../../components/RememberedScroll';
 import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
@@ -119,7 +117,6 @@ function formatDate(value?: string): string {
   return Number.isNaN(date.valueOf()) ? 'дата не указана' : date.toLocaleDateString('ru-RU', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-const donationLink = process.env.EXPO_PUBLIC_DONATION_URL?.trim() || '';
 const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
 type TrackCards = Record<string, { path: string; thumbnail?: string; music?: MusicTags; cover?: string | null; quality?: { format: string; kbps: number } }>;
 type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
@@ -352,6 +349,7 @@ function CatalogScreen() {
   const [updateReady, setUpdateReady] = useState(false);
   const updatePending = useRef(false);
   const editingInProgress = useRef(false);
+  editingInProgress.current = Boolean(editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack);
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const current = document.querySelector('meta[name="ritm-version"]')?.getAttribute('content');
@@ -374,28 +372,7 @@ function CatalogScreen() {
     window.addEventListener('focus', check);
     return () => { clearInterval(timer); window.removeEventListener('focus', check); controller.abort(); };
   }, []);
-  const [homeLibrary, setHomeLibrary] = useState<HomeLibrary | null>(null);
-  const [kioskPin, setKioskPin] = useState('');
-  editingInProgress.current = Boolean(editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack || kioskPin);
-  function kioskAction() {
-    if (!kioskPin) {
-      const pin = window.prompt('Придумай PIN для выхода из киоска (4–8 цифр)');
-      if (pin === null) return;
-      if (!/^\d{4,8}$/.test(pin)) { window.alert('PIN должен содержать от 4 до 8 цифр.'); return; }
-      setKioskPin(pin);
-      if (document.documentElement.requestFullscreen) void document.documentElement.requestFullscreen().catch(() => {});
-    } else {
-      const pin = window.prompt('Введи PIN для выхода из киоска');
-      if (pin === null) return;
-      if (pin !== kioskPin) { window.alert('Неверный PIN.'); return; }
-      setKioskPin('');
-      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
-    }
-  }
-  function audioUrl(track: Track) {
-    return track.id.startsWith('home:') ? homeLibrary?.stream(track) || '' : trackAudioUrl(track);
-  }
-  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music' | 'downloads' | 'home'>(() => authUser && typeof navigator !== 'undefined' && !navigator.onLine ? 'downloads' : 'main');
+  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music' | 'downloads'>(() => authUser && typeof navigator !== 'undefined' && !navigator.onLine ? 'downloads' : 'main');
   
   const [volume, setVolume] = useState(0.7);
   const [prevVolume, setPrevVolume] = useState(0.7);
@@ -832,7 +809,7 @@ function CatalogScreen() {
         audio.removeEventListener('playing', resetClock);
       };
     }
-  }, [activeAudio, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume, homeLibrary]);
+  }, [activeAudio, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume]);
 
   const seekTo = (seconds: number) => {
     const audio = webAudioRef.current;
@@ -895,7 +872,7 @@ function CatalogScreen() {
     cancelTransition();
     const audio = webAudioRef.current;
     if (audio) mixer.current = m.attachAudioElement?.(audio, volume) ?? mixer.current;
-    if (!track.id.startsWith('home:') && supabase && (Platform.OS !== 'web' || navigator.onLine)) {
+    if (supabase && (Platform.OS !== 'web' || navigator.onLine)) {
       const controller = new AbortController();
       visibilityRequest.current = controller;
       const visible = await supabase.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).abortSignal(controller.signal).maybeSingle();
@@ -926,7 +903,7 @@ function CatalogScreen() {
       }
     } catch (e) {}
 
-    const rawUrl = audioUrl(playableTrack);
+    const rawUrl = trackAudioUrl(playableTrack);
 
     setTrackDuration(track.duration || playableTrack?.duration || 180);
     setCurrentTime(0);
@@ -942,7 +919,7 @@ function CatalogScreen() {
         mixer.current?.resetLevel(audio);
         try { await audio.play(); } catch (error) {
           const audiusId = track.raw_id || (track.id.startsWith('audius_') ? track.id.slice(7) : null);
-          if (track.id.startsWith('home:') || !audiusId || request !== playRequest.current) throw error;
+          if (!audiusId || request !== playRequest.current) throw error;
           audio.src = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${audiusId}/stream?app_name=RITM_APP`;
           await audio.play();
         }
@@ -960,7 +937,6 @@ function CatalogScreen() {
   };
 
   function registerPlayback(track: Track, audio: HTMLAudioElement, context = playContext.current) {
-    if (track.id.startsWith('home:')) return;
     setRecentlyPlayed(previous => [track, ...previous.filter(item => item.id !== track.id)].slice(0, 30));
     if (!authUser || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
     const entry: PlaybackProgress = { id: track.id, seconds: 0, time: performance.now(), position: audio.currentTime };
@@ -993,7 +969,7 @@ function CatalogScreen() {
     let prepared = preparedTransition.current;
     if (!prepared) {
       const track = queuedNext.current[nextIndex()];
-      const rawUrl = track && audioUrl(track);
+      const rawUrl = track && trackAudioUrl(track);
       if (!rawUrl) return;
       const audio = spareAudio.current;
       if (!m.attachAudioElement?.(audio, volume, false)) return;
@@ -1001,7 +977,7 @@ function CatalogScreen() {
       mixer.current.resetLevel(audio);
       audio.playbackRate = outgoing.playbackRate;
       audio.preload = 'auto';
-      const plan: PreparedTransition = { audio, track, request: playRequest.current, approved: track.id.startsWith('home:') || !supabase || !navigator.onLine, starting: false };
+      const plan: PreparedTransition = { audio, track, request: playRequest.current, approved: !supabase || !navigator.onLine, starting: false };
       preparedTransition.current = prepared = plan;
       if (plan.approved) audio.src = rawUrl;
       else void (async () => {
@@ -1357,14 +1333,12 @@ function CatalogScreen() {
             ) : null}
           </View>
 
-          {Platform.OS === 'web' && /^https:\/\//i.test(donationLink) &&
-            <a href={donationLink} target="_blank" rel="noopener noreferrer" style={{ color: '#a71d37', marginBottom: 12 }}>Поддержать «Ритм.»</a>}
           <Text style={{ fontSize: 10, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12, paddingLeft: 4 }}>Медиатека</Text>
           <View style={{ gap: 6, flexDirection: compact ? 'row' : 'column', flexWrap: 'wrap' }}>
             {[
               { id: 'main', label: 'Слушать' },
               ...(authUser ? [{ id: 'uploads', label: 'Загруженные' },
-              { id: 'my_music', label: 'Моя музыка' }, { id: 'downloads', label: 'Скачанные' }, { id: 'home', label: 'Фонотека' }] : []),
+              { id: 'my_music', label: 'Моя музыка' }, { id: 'downloads', label: 'Скачанные' }] : []),
             ].map((tab: any) => {
               const isActive = activeTab === tab.id;
               return (
@@ -1398,7 +1372,7 @@ function CatalogScreen() {
           </Pressable> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <Text style={{ fontSize: compact ? 21 : 32, fontWeight: '800', color: '#000000', flexShrink: 1 }}>
-              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'downloads' ? 'Скачанные' : activeTab === 'home' ? 'Домашняя фонотека' : 'Моя музыка'}
+              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'downloads' ? 'Скачанные' : 'Моя музыка'}
             </Text>
 
             {activeTab === 'uploads' && (
@@ -1483,18 +1457,6 @@ function CatalogScreen() {
             <Text>Доступно обновление. Если играет музыка, сайт обновится после трека.</Text>
             <PrimaryButton variant="soft" title="Обновить сейчас" onPress={() => window.location.reload()} />
           </View>}
-          {authUser && <ScrollView style={{ flex: 1, display: activeTab === 'home' ? 'flex' : 'none' }}>
-            <HomeLibraryPanel connection={homeLibrary} onConnect={connection => {
-              setHomeLibrary(connection);
-              if (!connection && m.currentTrack?.id.startsWith('home:')) {
-                playRequest.current++;
-                stopAudio();
-                setUpcoming([]);
-                previousTracks.current = [];
-                m.clearTrack();
-              }
-            }} play={(track, list) => void safePlayTrack(track, list, 'Домашняя фонотека')} />
-          </ScrollView>}
           {authUser && activeTab === 'downloads' && <RememberedScroll position={listPositions.current.downloads} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
             {offlineList.length ? <>
               <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
@@ -1853,7 +1815,7 @@ function CatalogScreen() {
                   </Text>
                 </View>
               </Pressable>
-              {!m.currentTrack.id.startsWith('home:') && <Pressable
+              <Pressable
                 onPress={() => toggleAddToMyMusic(m.currentTrack)} 
                 style={{ 
                   padding: 8,
@@ -1861,7 +1823,7 @@ function CatalogScreen() {
                 }}
               >
                 <WebIcon name={isCurrentTrackFavorite ? "heart" : "heart-outline"} size={20} color="#fa233b" />
-              </Pressable>}
+              </Pressable>
             </>
           ) : (
             <Text style={{ fontSize: 14, color: '#a1a1a6', fontWeight: '500' }}>Музыка не выбрана</Text>
@@ -2206,7 +2168,7 @@ function CatalogScreen() {
         title={m.currentTrack.title} artist={m.currentTrack.artist}
         cover={<TrackCoverImage track={m.currentTrack} style={{ width: '100%', height: '100%' }} />}
         time={currentTime} duration={activeDuration} playing={m.isPlaying} shuffle={isShuffle} repeat={isRepeat}
-        seek={seekTo} close={() => { if (!kioskPin) setShowFullPlayer(false); }} kiosk={Boolean(kioskPin)} kioskAction={Platform.OS === 'web' ? kioskAction : undefined} previous={handlePrevious} next={handleNext} togglePlay={handleTogglePlay}
+        seek={seekTo} close={() => setShowFullPlayer(false)} previous={handlePrevious} next={handleNext} togglePlay={handleTogglePlay}
         toggleShuffle={() => setIsShuffle(!isShuffle)} toggleRepeat={() => setIsRepeat(!isRepeat)}
         equalizer={() => playerPanel(() => setShowEqualizerModal(true))}
         icon={(name, size, color) => <WebIcon name={name} size={size} color={color} />} />}</PlaybackClock>}

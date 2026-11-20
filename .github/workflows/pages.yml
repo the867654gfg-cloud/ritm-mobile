@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CI: 'true'
-      EXPO_PUBLIC_DONATION_URL: ${{ vars.EXPO_PUBLIC_DONATION_URL }}
       EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
       EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
     steps:
