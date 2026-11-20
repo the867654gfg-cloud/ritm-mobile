@@ -942,7 +942,7 @@ function CatalogScreen() {
         mixer.current?.resetLevel(audio);
         try { await audio.play(); } catch (error) {
           const audiusId = track.raw_id || (track.id.startsWith('audius_') ? track.id.slice(7) : null);
-          if (!audiusId || request !== playRequest.current) throw error;
+          if (track.id.startsWith('home:') || !audiusId || request !== playRequest.current) throw error;
           audio.src = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${audiusId}/stream?app_name=RITM_APP`;
           await audio.play();
         }
