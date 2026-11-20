@@ -1,50 +1,49 @@
 import { supabase } from './supabase';
-import { trackFilePaths } from './storage-utils';
+import { storagePathFromPublicUrl } from './storage-utils';
 
 const BUCKET = 'music-storage';
 
-export type DeleteTracksResult = {
-  /** id треков, которые реально удалены из базы */
-  deletedIds: string[];
-  /** id треков, которые удалить не удалось (например, чужие) */
-  failedIds: string[];
-  /** сколько файлов убрано из хранилища */
-  filesRemoved: number;
-  /** true, если часть файлов осталась в хранилище */
-  filesLeft: boolean;
-};
+export type DeleteTracksResult = { deletedIds: string[]; failedIds: string[]; filesLeft: boolean };
 
-/**
- * Удаляет треки вместе с их файлами. Раньше удалялась только запись в базе, а аудио и обложка
- * оставались в хранилище и занимали место.
- *
- * Порядок важен: сначала файлы, потом запись. Право удалить файл проверяется по записи трека
- * (владелец трека может удалить его файлы), поэтому после удаления записи файл удалить уже нельзя.
- */
-export async function deleteTracksWithFiles(ids: string[]): Promise<DeleteTracksResult> {
-  const result: DeleteTracksResult = { deletedIds: [], failedIds: [...ids], filesRemoved: 0, filesLeft: false };
-  if (!supabase || ids.length === 0) return result;
+export async function deleteTracksWithFiles(userId: string, ids: string[]): Promise<DeleteTracksResult> {
+  const result: DeleteTracksResult = { deletedIds: [], failedIds: [], filesLeft: false };
+  const db = supabase;
+  const uniqueIds = [...new Set(ids)];
+  if (!db) return { ...result, failedIds: uniqueIds };
+  for (let i = 0; i < uniqueIds.length; i += 50) {
+    const batch = uniqueIds.slice(i, i + 50);
+    const { data: rows, error } = await db.from('tracks').select('id, audio_url, cover_url, cover_key')
+      .eq('user_id', userId).in('id', batch);
+    if (error) continue;
 
-  try {
-    // 1. Какие файлы принадлежат этим трекам
-    const { data: rows } = await supabase.from('tracks').select('audio_url, cover_url').in('id', ids);
-    const paths = trackFilePaths(rows ?? [], BUCKET);
-
-    // 2. Удаляем файлы. Storage не сообщает об ошибке, если прав нет, а просто возвращает меньше файлов, чем просили
-    if (paths.length > 0) {
-      const { data: removed, error } = await supabase.storage.from(BUCKET).remove(paths);
-      result.filesRemoved = removed?.length ?? 0;
-      result.filesLeft = !!error || result.filesRemoved < paths.length;
+    const deleteRows = (keys: string[]) => db.from('tracks').delete().eq('user_id', userId).in('id', keys).select('id');
+    const deletion = await deleteRows(batch);
+    const deleted = new Set<string>(deletion.data?.map(row => row.id) ?? []);
+    if (deletion.error) {
+      for (const row of rows ?? []) {
+        const single = await deleteRows([row.id]);
+        if (single.data?.length) deleted.add(row.id);
+      }
     }
+    result.deletedIds.push(...deleted);
 
-    // 3. Удаляем записи. select('id') возвращает только то, что реально удалено (чужие треки защита не пропустит)
-    const { data: deleted, error: dbError } = await supabase.from('tracks').delete().in('id', ids).select('id');
-    if (!dbError && deleted) {
-      result.deletedIds = deleted.map((r: { id: string }) => r.id);
-      result.failedIds = ids.filter((id) => !result.deletedIds.includes(id));
+    const paths = new Set<string>();
+    for (const row of rows ?? []) {
+      if (!deleted.has(row.id)) continue;
+      for (const url of [row.audio_url, row.cover_url, row.cover_key]) {
+        const path = storagePathFromPublicUrl(url, BUCKET);
+        if (!path) continue;
+        // A legacy path may also be used by another recording. The track's own directory is safe to clean.
+        if (path.startsWith(userId + '/' + row.id + '/')) paths.add(path);
+        else if (!path.startsWith(userId + '/playlist-covers/')) result.filesLeft = true;
+      }
     }
-  } catch (e) {
-    console.warn('Не удалось удалить треки', e);
+    if (paths.size) {
+      const { error: storageError } = await db.storage.from(BUCKET).remove([...paths]);
+      if (storageError) result.filesLeft = true;
+    }
   }
+  const removed = new Set(result.deletedIds);
+  result.failedIds = uniqueIds.filter(id => !removed.has(id));
   return result;
 }

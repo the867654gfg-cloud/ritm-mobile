@@ -77,6 +77,13 @@ async function loadAllTracks() {
 
 const files = await listAllFiles();
 const tracks = await loadAllTracks();
+const playlistCovers = [];
+for (let from = 0; ; from += 1000) {
+  const { data, error } = await supabase.from('user_playlists').select('cover_url').not('cover_url', 'is', null).order('id').range(from, from + 999);
+  if (error) throw new Error(`Не удалось проверить обложки плейлистов: ${error.message}`);
+  playlistCovers.push(...data);
+  if (data.length < 1000) break;
+}
 
 // Если треков нет вообще, то «лишними» окажутся все файлы. Скорее всего, это сбой, а не так и задумано.
 if (tracks.length === 0 && files.length > 0 && !allowEmpty) {
@@ -85,7 +92,7 @@ if (tracks.length === 0 && files.length > 0 && !allowEmpty) {
   process.exit(1);
 }
 
-const { orphans, skippedRecent, usedCount } = findOrphans(files, tracks, { minAgeHours: 24, bucket: BUCKET });
+const { orphans, skippedRecent, usedCount } = findOrphans(files, [...tracks, ...playlistCovers], { minAgeHours: 24, bucket: BUCKET });
 const total = (list) => list.reduce((s, f) => s + (f.size || 0), 0);
 
 console.log(`Файлов в бакете ${BUCKET}: ${files.length} (${formatMB(total(files))})`);

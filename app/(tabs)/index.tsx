@@ -177,13 +177,13 @@ function TrackByline({ track, extras = [] }: { track: Track; extras?: string[] }
   </Text>;
 }
 
-function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
+function TrackCoverImage({ track, style, override }: { track: Track | null; style: any; override?: string }) {
   const cards = useContext(TrackCardsContext);
   const [failedUris, setFailedUris] = useState<string[]>([]);
   const original = track?.cover_url || track?.cover_key || '';
   const repair = track && cards[track.id]?.cover;
   // User replacements use a new owner-scoped URL and should win over the last build's repair.
-  const preferred = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : original || repair || '';
+  const preferred = override || (/\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : original || repair || '');
   const coverUri = failedUris.includes(preferred) && repair && repair !== preferred ? repair : preferred;
   const hasCover = Boolean(coverUri && !failedUris.includes(coverUri));
   const colors = ['#49265a', '#244855', '#573041', '#293b66', '#49425f'];
@@ -1094,27 +1094,46 @@ function CatalogScreen() {
     }
   };
 
-  // Сообщение пользователю, если что-то удалилось не полностью
-  const reportDeleteResult = (result: DeleteTracksResult, total: number) => {
-    let message = '';
-    if (result.failedIds.length > 0) {
-      message = `Не удалось удалить ${result.failedIds.length} из ${total}. Удалять можно только свои загруженные треки.`;
-    } else if (result.filesLeft) {
-      message = 'Трек удалён, но часть файлов не удалось убрать из хранилища.';
-    }
-    if (!message) return;
-    if (Platform.OS === 'web' && typeof window !== 'undefined') window.alert(message);
-    else console.warn(message);
-  };
+  const removingUploads = useRef(false);
+  async function removeUploads(ids: string[]): Promise<DeleteTracksResult | undefined> {
+    if (!authUser || removingUploads.current) return;
+    removingUploads.current = true;
+    try {
+      const result = await deleteTracksWithFiles(authUser.id, ids);
+      const removed = new Set(result.deletedIds);
+      const keep = (track: Track) => !removed.has(track.id);
+      setCloudUploadedTracks(previous => previous.filter(keep));
+      setGlobalSearchResults(previous => previous.filter(keep));
+      setMyMusicTracks(previous => previous.filter(keep));
+      setRecentlyPlayed(previous => previous.filter(keep));
+      setUserPlaylists(previous => previous.map(playlist => ({ ...playlist, tracks: playlist.tracks.filter(keep) })));
+      setSelectedPlaylistModal(previous => previous ? { ...previous, tracks: previous.tracks.filter(keep) } : null);
+      setSelectedTrackDetails(previous => previous && keep(previous) ? previous : null);
+      if (removed.size) {
+        searchAbortRef.current?.abort();
+        searchCatalog.current = undefined;
+        setCatalogRevision(value => value + 1);
+        previousTracks.current = previousTracks.current.filter(keep);
+        setUpcoming(queuedNext.current.filter(keep));
+        if (m.currentTrack && removed.has(m.currentTrack.id)) {
+          playRequest.current++;
+          stopAudio();
+          m.clearTrack();
+        }
+      }
+      const remaining = result.failedIds.length ? ' Осталось удалить: ' + result.failedIds.length + '.' : '';
+      const files = result.filesLeft ? ' Часть файлов осталась в хранилище.' : '';
+      setNotice('Удалено из каталога: ' + removed.size + '.' + remaining + files);
+      return result;
+    } catch { setNotice('Не удалось завершить удаление. Обнови список и попробуй ещё раз.'); }
+    finally { removingUploads.current = false; }
+  }
 
   const handleRemoveTrack = async (track: Track, source: 'my_music' | 'uploads') => {
     if (source === 'my_music') {
       if (authUser && await setFavorite(authUser.id, track, false)) setMyMusicTracks(prev => prev.filter(t => t.id !== track.id));
     } else if (source === 'uploads') {
-      const result = await deleteTracksWithFiles([track.id]);
-      // Из списка убираем только то, что реально удалилось в базе
-      setCloudUploadedTracks(prev => prev.filter(t => !result.deletedIds.includes(t.id)));
-      reportDeleteResult(result, 1);
+      await removeUploads([track.id]);
     }
     setSelectedTrackMenu(null);
   };
@@ -1128,9 +1147,10 @@ function CatalogScreen() {
       setMyMusicTracks(prev => prev.filter(track => !removed.has(track.id)));
       if (removed.size !== tracks.length) setNotice('Часть треков не удалось убрать из избранного.');
     } else if (source === 'uploads') {
-      const result = await deleteTracksWithFiles(selectedTrackIds);
-      setCloudUploadedTracks(prev => prev.filter(t => !result.deletedIds.includes(t.id)));
-      reportDeleteResult(result, selectedTrackIds.length);
+      const result = await removeUploads(selectedTrackIds);
+      if (result) setSelectedTrackIds(result.failedIds);
+      setSelectedTrackMenu(null);
+      return;
     }
     setSelectedTrackIds([]);
     setSelectedTrackMenu(null);
@@ -1591,7 +1611,7 @@ function CatalogScreen() {
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
                         <TrackByline track={item} extras={[
                           item.version_kind || trackVersion(item.title) !== 'original' ? TRACK_VERSIONS[trackVersion(item.title, item.version_kind)] : '',
-                          item.id.startsWith('audius_') ? 'Audius' : 'Ритм',
+                          item.id.startsWith('audius_') ? 'Audius' : '',
                         ]} />
                       </View>
                     </Pressable>
@@ -1649,7 +1669,8 @@ function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека ' + item.title}
+                      onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                     </Pressable>
                   </View>
@@ -2062,7 +2083,7 @@ function CatalogScreen() {
                     {selectedPlaylistModal.title}
                   </Text>
                   <Text style={{ fontSize: 13, color: '#8e8e93', fontWeight: '500', marginBottom: 14 }}>
-                    {selectedPlaylistModal.tracks.length} треков • RITM Music
+                    {selectedPlaylistModal.tracks.length} треков
                   </Text>
                   {selectedPlaylistModal.id && <PrimaryButton variant="soft" title="Редактировать" onPress={() => {
                     const owned = userPlaylists.find(playlist => playlist.id === selectedPlaylistModal.id);
@@ -2145,7 +2166,7 @@ function CatalogScreen() {
                       </Text>
 
                       {/* Обложка трека */}
-                      <TrackCoverImage track={track} style={{ width: 46, height: 46, borderRadius: 10, marginRight: 14 }} />
+                      <TrackCoverImage track={track} override={selectedPlaylistModal.cover} style={{ width: 46, height: 46, borderRadius: 10, marginRight: 14 }} />
 
                       {/* Название + Артист */}
                       <View style={{ flex: 1, marginRight: 12 }}>
@@ -2363,7 +2384,7 @@ function CatalogScreen() {
               {(selectedTrackMenu.source === 'my_music' || selectedTrackMenu.source === 'uploads') && (
                 <Pressable 
                   onPress={() => {
-                    if (selectedTrackIds.length > 1) {
+                    if (selectedTrackIds.length > 0) {
                       if (selectedTrackMenu.source !== 'network') void handleBatchRemove(selectedTrackMenu.source);
                     } else {
                       if (selectedTrackMenu.source !== 'network') void handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
@@ -2405,9 +2426,15 @@ function CatalogScreen() {
           if (m.currentTrack?.id === id) { stopAudio(); m.clearTrack(); }
         }
       }} />}
-      {playlistEdit && <EditPlaylist playlist={playlistEdit} close={() => setPlaylistEdit(null)} onSave={() => {
-        setPlaylistEdit(null); void refreshLibrary();
-      }} />}
+      {playlistEdit && authUser && <EditPlaylist key={playlistEdit.id} playlist={playlistEdit} userId={authUser.id}
+        close={() => setPlaylistEdit(null)} onSave={() => {
+          setPlaylistEdit(null); setSelectedPlaylistModal(null); void refreshLibrary();
+        }} onDelete={() => {
+          setUserPlaylists(previous => previous.filter(playlist => playlist.id !== playlistEdit.id));
+          setPlaylistEdit(null);
+          setSelectedPlaylistModal(null);
+          setNotice('Плейлист удалён.');
+        }} />}
       {artistId && <ArtistPanel id={artistId} viewer={authUser?.id} mapTrack={mapCloudTrack} close={() => setArtistId(null)} signIn={() => {
         setArtistId(null); router.push('/sign-in');
       }} play={(track, queue) => { setArtistId(null); void safePlayTrack(track, queue, 'Автор'); }} />}

@@ -36,7 +36,20 @@ export async function loadUserLibrary(userId: string): Promise<LibrarySnapshot> 
     cover: playlist.cover_url ?? undefined,
     tracks: trackRows.filter((row: any) => row.playlist_id === playlist.id).map((row: any) => asTrack(row.track_data)).filter(Boolean) as Track[],
   }));
-  return { favorites, playlists, history };
+  const localIds = [...new Set([...favorites, ...history, ...playlists.flatMap(playlist => playlist.tracks)]
+    .filter(track => !/^audius_[a-z0-9]+$/i.test(track.id)).map(track => track.id))];
+  const available = new Set<string>();
+  for (let i = 0; i < localIds.length; i += 100) {
+    const { data, error } = await supabase.from('tracks').select('id').in('id', localIds.slice(i, i + 100));
+    if (error) throw error;
+    for (const row of data ?? []) available.add(row.id);
+  }
+  const playable = (track: Track) => available.has(track.id) || /^audius_[a-z0-9]+$/i.test(track.id);
+  return {
+    favorites: favorites.filter(playable),
+    playlists: playlists.map(playlist => ({ ...playlist, tracks: playlist.tracks.filter(playable) })),
+    history: history.filter(playable),
+  };
 }
 
 export async function setFavorite(userId: string, track: Track, enabled: boolean): Promise<boolean> {
