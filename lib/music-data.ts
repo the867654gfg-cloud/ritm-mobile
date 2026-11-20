@@ -6,6 +6,7 @@ export type Track = {
   duration: number;
   genre: string;
   artist?: string;
+  music?: import('./harmonic').MusicTags;
   album?: string | null;
   version_kind?: import('./catalog-search').TrackVersion | null;
   /** Готовая ссылка на аудио (Audius или путь в Supabase Storage) */

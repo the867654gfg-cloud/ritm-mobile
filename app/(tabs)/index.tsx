@@ -1,3 +1,5 @@
+import { RememberedScroll } from '../../components/RememberedScroll';
+import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
 import { createContext, useContext, useState, useRef, useMemo, useEffect } from 'react';
 import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
@@ -116,7 +118,7 @@ function formatDate(value?: string): string {
 }
 
 const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
-type TrackCards = Record<string, { path: string; thumbnail?: string; cover?: string | null; quality?: { format: string; kbps: number } }>;
+type TrackCards = Record<string, { path: string; thumbnail?: string; music?: MusicTags; cover?: string | null; quality?: { format: string; kbps: number } }>;
 type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
 const TrackCardsContext = createContext<TrackCards>({});
 const trackRow = {
@@ -146,6 +148,7 @@ function mapCloudTrack(item: any): Track {
   return {
     id: String(item.id),
     title: item.title || 'Без названия',
+    music: item.music,
     artist: item.artist || '',
     album: item.album,
     version_kind: item.version_kind,
@@ -179,6 +182,7 @@ function TrackCoverImage({ track, style }: { track: Track | null; style: any }) 
 
 function mapAudiusTrack(item: any, host: string): Track {
   return { id: 'audius_' + item.id, title: item.title, artist: item.user?.name, genre: item.genre || '',
+    music: { bpm: Number(item.bpm) || undefined, key: item.musical_key || undefined },
     duration: item.duration || 180, fileDuration: Number(item.duration) || undefined, url: host + '/v1/tracks/' + item.id + '/stream?app_name=RITM_APP',
     raw_id: item.id, small_cover_url: item.artwork?.['150x150'], cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'],
     published_at: item.release_date, description: item.description };
@@ -341,6 +345,31 @@ function CatalogScreen() {
   const [searchError, setSearchError] = useState(false);
   const [playCounts, setPlayCounts] = useState<Record<string, { starts: number; listens: number }>>({});
 
+  const listPositions = useRef({ main: { y: 0 }, uploads: { y: 0 }, my_music: { y: 0 }, downloads: { y: 0 } });
+  const [updateReady, setUpdateReady] = useState(false);
+  const updatePending = useRef(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const current = document.querySelector('meta[name="ritm-version"]')?.getAttribute('content');
+    if (!current) return;
+    const controller = new AbortController();
+    async function check() {
+      if (!navigator.onLine || updatePending.current) return;
+      try {
+        const response = await fetch(basePath + '/version.json?t=' + Date.now(), { cache: 'no-store', signal: controller.signal });
+        if (!response.ok) return;
+        const { version } = await response.json();
+        if (typeof version === 'string' && version !== current && !controller.signal.aborted) {
+          updatePending.current = true;
+          setUpdateReady(true);
+        }
+      } catch {}
+    }
+    void check();
+    const timer = setInterval(check, 60000);
+    window.addEventListener('focus', check);
+    return () => { clearInterval(timer); window.removeEventListener('focus', check); controller.abort(); };
+  }, []);
   const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music' | 'downloads'>(() => authUser && typeof navigator !== 'undefined' && !navigator.onLine ? 'downloads' : 'main');
   
   const [volume, setVolume] = useState(0.7);
@@ -751,6 +780,7 @@ function CatalogScreen() {
         if (audio !== webAudioRef.current) return;
         countPlayback(audio);
         if (playingRequest.current !== playRequest.current) return;
+        if (updatePending.current && navigator.onLine) { window.location.reload(); return; }
         cancelTransition();
         if (isRepeat && m.currentTrack) void safePlayTrack(m.currentTrack, undefined, playContext.current, 0, true);
         else if (queuedNext.current.length) handleNext();
@@ -926,7 +956,7 @@ function CatalogScreen() {
   }
 
   function checkTransition(outgoing: HTMLAudioElement) {
-    if (!crossfade || isRepeat || fadingTrack.current || !mixer.current || !spareAudio.current ||
+    if (updatePending.current || !crossfade || isRepeat || fadingTrack.current || !mixer.current || !spareAudio.current ||
       outgoing.paused || outgoing.seeking || playingRequest.current !== playRequest.current) return;
     const remaining = (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate;
     if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + 10) return;
@@ -958,6 +988,7 @@ function CatalogScreen() {
     plan.starting = true;
     void plan.audio.play().then(() => {
       if (preparedTransition.current !== plan || plan.request !== playRequest.current) return;
+      if (updatePending.current) { cancelTransition(false); return; }
       const index = queuedNext.current.findIndex(item => item.id === plan.track.id);
       const seconds = Math.min(crossfade, (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate);
       if (index < 0 || outgoing.paused || outgoing.seeking || seconds <= 0.15 || !mixer.current) {
@@ -1204,6 +1235,11 @@ function CatalogScreen() {
     }).slice(0, 20), cover_url: '' },
   ], [globalSearchResults, recentlyPlayed, myMusicTracks]);
 
+  const suggestions = useMemo(() => selectedTrackDetails ? harmonicMatches(
+    selectedTrackDetails,
+    [...new Map([...globalSearchResults, ...cloudUploadedTracks, ...myMusicTracks].map(track => [track.id, track])).values()],
+    track => ({ ...trackCards[track.id]?.music, ...track.music }),
+  ) : [], [selectedTrackDetails, trackCards, globalSearchResults, cloudUploadedTracks, myMusicTracks]);
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
 
   const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition });
@@ -1411,14 +1447,18 @@ function CatalogScreen() {
           )}
 
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
-          {authUser && activeTab === 'downloads' && <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
+          {updateReady && <View style={{ marginBottom: 8 }}>
+            <Text>Доступно обновление. Если играет музыка, сайт обновится после трека.</Text>
+            <PrimaryButton variant="soft" title="Обновить сейчас" onPress={() => window.location.reload()} />
+          </View>}
+          {authUser && activeTab === 'downloads' && <RememberedScroll position={listPositions.current.downloads} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
             {offlineList.length ? <>
               <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
               <PrimaryButton title="Очистить скачанные" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные треки.'))} />
             </> : <Text>Здесь появятся треки, которые ты сохранишь кнопкой «Скачать» в карточке «О треке».</Text>}
-          </ScrollView>}
+          </RememberedScroll>}
           {activeTab === 'main' && (
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            <RememberedScroll position={listPositions.current.main} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               {offline && !authUser && offlineList.length > 0 && <View style={{ gap: 8 }}>
                 <Text style={{ fontWeight: '800' }}>Скачано на этом устройстве</Text>
                 <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
@@ -1573,12 +1613,12 @@ function CatalogScreen() {
                 );
               })}
               {catalogResults.length > visibleCount && <PrimaryButton title="Показать ещё" variant="soft" onPress={() => setVisibleCount(count => count + 50)} />}
-            </ScrollView>
+            </RememberedScroll>
           )}
 
           {/* ВКЛАДКА 2: ЗАГРУЖЕННЫЕ */}
           {activeTab === 'uploads' && (
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            <RememberedScroll position={listPositions.current.uploads} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
                 Облачные загрузки Supabase ({cloudUploadedTracks.length})
               </Text>
@@ -1610,12 +1650,12 @@ function CatalogScreen() {
                   </View>
                 );
               })}
-            </ScrollView>
+            </RememberedScroll>
           )}
 
           {/* ВКЛАДКА 3: МОЯ МУЗЫКА */}
           {activeTab === 'my_music' && (
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            <RememberedScroll position={listPositions.current.my_music} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               {authUser && hasLegacyLibrary(authUser.id) && <PrimaryButton title="Перенести медиатеку из этого браузера" variant="soft" loading={importing} onPress={async () => {
                 if (importing) return;
                 setImporting(true);
@@ -1722,7 +1762,7 @@ function CatalogScreen() {
                   );
                 })
               )}
-            </ScrollView>
+            </RememberedScroll>
           )}
         </View>
       </View>
@@ -2181,6 +2221,12 @@ function CatalogScreen() {
                     if (!authUser) { router.push('/sign-in'); return; }
                     setReportTrack(selectedTrackDetails); setReason('');
                   }} />
+                  {suggestions.length > 0 && <>
+                    <Text style={{ color: '#fff', fontWeight: '800' }}>По темпу и тональности</Text>
+                    {suggestions.map(({ track, bpm, key }) => <PrimaryButton key={track.id} variant="soft"
+                      title={track.title + ' · ' + Math.round(bpm) + ' BPM · ' + key}
+                      onPress={() => { void safePlayTrack(track); setSelectedTrackDetails(null); }} />)}
+                  </>}
                   {selectedTrackDetails.genre && globalSearchResults.some(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre) ? <>
                     <Text style={{ color: '#fff', fontWeight: '800' }}>Похожие треки</Text>
                     <TrackList tracks={globalSearchResults.filter(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre).slice(0, 4)} play={track => {

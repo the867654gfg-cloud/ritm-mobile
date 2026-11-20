@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { parseBuffer } from 'music-metadata';
 
@@ -7,7 +8,10 @@ const service = new URL(process.env.EXPO_PUBLIC_SUPABASE_URL);
 const key = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const base = (await import('../app.json', { with: { type: 'json' } })).default.expo.experiments?.baseUrl ?? '';
 const site = new URL(base + '/', 'https://the867654gfg-cloud.github.io');
-const template = await readFile('dist/index.html', 'utf8');
+const originalHtml = await readFile('dist/index.html', 'utf8');
+const version = process.env.GITHUB_SHA || createHash('sha256').update(originalHtml).digest('hex');
+const template = originalHtml.replace('</head>', '<meta name="ritm-version" content="' + version + '"></head>');
+await writeFile('dist/index.html', template);
 const storage = '/storage/v1/object/public/music-storage/';
 const safeId = /^[a-zA-Z0-9_-]{1,150}$/;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -113,6 +117,7 @@ async function prepare(track) {
   let thumbnail;
   let artwork;
   let quality;
+  let music;
   let audioPrefix;
   let validCover = Boolean(cover && !ownStorage(cover));
   try {
@@ -145,7 +150,8 @@ async function prepare(track) {
     try {
       audioPrefix ??= await readPrefix(track.audio_url, 2 * 1024 * 1024);
       if (audioPrefix) {
-        const { format } = await parseBuffer(audioPrefix, undefined, { skipCovers: true });
+        const { format, common } = await parseBuffer(audioPrefix, undefined, { skipCovers: true });
+        if (common.bpm || common.key) music = { bpm: common.bpm, key: common.key };
         if (format.container === 'MPEG' && format.codec?.includes('Layer 3') && format.codecProfile === 'CBR' && format.bitrate > 0) {
           quality = { format: 'MP3', kbps: Math.round(format.bitrate / 1000) };
         }
@@ -154,7 +160,7 @@ async function prepare(track) {
   }
   const share = new URL('t/' + track.id + '/', site);
   const image = new URL(repairedCover || (validCover && cover ? cover.href : 'ritm-icon.png'), site);
-  cards[track.id] = { path: share.pathname, thumbnail, quality, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
+  cards[track.id] = { path: share.pathname, thumbnail, quality, music, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
   const redirect = new URL('?track=' + encodeURIComponent(track.id), site);
   const title = track.title + ' · Ритм';
   const description = [track.artist, track.description].filter(Boolean).join(' · ').slice(0, 200) || 'Слушать в Ритме';
@@ -174,4 +180,5 @@ function productAudio(value) {
 }
 for (let offset = 0; offset < tracks.length; offset += 6) await Promise.all(tracks.slice(offset, offset + 6).map(prepare));
 await writeFile('dist/track-cards.json', JSON.stringify(cards));
+await writeFile('dist/version.json', JSON.stringify({ version }));
 console.log('Track pages: ' + tracks.length + ', recovered artwork: ' + repaired);
