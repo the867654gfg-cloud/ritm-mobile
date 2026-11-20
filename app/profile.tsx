@@ -96,7 +96,7 @@ export default function ProfileScreen() {
   const heading = { fontSize: 16, fontWeight: '800', color: COLORS.text, marginBottom: 14 } as const;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <SafeAreaView nativeID="ritm-profile" style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
         <View style={{ width: '100%', maxWidth: 520, alignSelf: 'center' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>

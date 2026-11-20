@@ -4,7 +4,7 @@ import { getWebFileContentType } from '../lib/track-cover';
 import { Modal, ScrollView, Text, View } from 'react-native';
 import { Field, Notice, PrimaryButton } from './AuthUI';
 import { supabase } from '../lib/supabase';
-import type { UserPlaylist } from '../lib/user-library';
+import { addTracksToPlaylist, type UserPlaylist } from '../lib/user-library';
 import type { Track } from '../lib/music-data';
 
 export function CollectionPanel({ title, close, children }: { title: string; close: () => void; children: React.ReactNode }) {
@@ -21,10 +21,13 @@ export function CollectionPanel({ title, close, children }: { title: string; clo
   </Modal>;
 }
 
-export function EditPlaylist({ playlist, userId, close, onSave, onDelete }: { playlist: UserPlaylist; userId: string; close: () => void; onSave: () => void; onDelete: () => void }) {
-  const [title, setTitle] = useState(playlist.title);
-  const [cover, setCover] = useState(playlist.cover ?? '');
-  const [tracks, setTracks] = useState(playlist.tracks);
+export function EditPlaylist({ playlist, choices, userId, close, onSave, onDelete }: { playlist: UserPlaylist; choices: Track[]; userId: string; close: () => void; onSave: () => void; onDelete: () => void }) {
+  const [added, setAdded] = useState<Track[]>([]);
+  const [choosing, setChoosing] = useState(false);
+  const [query, setQuery] = useState('');
+  const existing = new Set([...playlist.tracks, ...added].map(track => track.id));
+  const matches = Array.from(new Map(choices.map(track => [track.id, track])).values()).filter(track =>
+    !existing.has(track.id) && (track.title + ' ' + (track.artist || '')).toLowerCase().includes(query.trim().toLowerCase()));
   const [jpeg, setJpeg] = useState<{ file: Blob; name: string; id: string }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,20 +50,13 @@ export function EditPlaylist({ playlist, userId, close, onSave, onDelete }: { pl
     } finally { setBusy(false); }
   }
 
-  const move = (index: number, offset: number) => setTracks(previous => {
-    const next = [...previous];
-    const other = index + offset;
-    if (other >= 0 && other < next.length) [next[index], next[other]] = [next[other], next[index]];
-    return next;
-  });
   const save = async () => {
-    if (!supabase || busy || !title.trim()) return;
-    if (!jpeg && cover.trim() && !/^https:\/\//i.test(cover.trim())) { setError('Укажите HTTPS-ссылку на обложку.'); return; }
+    if (!supabase || busy) return;
     const db = supabase;
     setBusy(true);
     setError('');
     try {
-      let coverUrl = cover.trim() || null;
+      let coverUrl = playlist.cover || null;
       if (jpeg) {
         const bucket = db.storage.from('music-storage');
         const path = userId + '/playlist-covers/' + playlist.id + '/' + jpeg.id + '.jpg';
@@ -68,10 +64,11 @@ export function EditPlaylist({ playlist, userId, close, onSave, onDelete }: { pl
         if (failure) throw failure;
         coverUrl = bucket.getPublicUrl(path).data.publicUrl;
       }
-      const { error: failure } = await db.rpc('ritm_edit_playlist', {
-        playlist_key: playlist.id, new_title: title.trim(), new_cover: coverUrl, track_keys: tracks.map(track => track.id),
-      });
-      if (failure) throw failure;
+      if (jpeg) {
+        const { error } = await db.from('user_playlists').update({ cover_url: coverUrl }).eq('id', playlist.id).eq('user_id', userId);
+        if (error) throw error;
+      }
+      if (!await addTracksToPlaylist(userId, playlist.id, added, playlist.tracks.length)) throw new Error();
       onSave();
     } catch { setError('Не удалось сохранить плейлист. Попробуй ещё раз.'); }
     finally { setBusy(false); }
@@ -92,18 +89,16 @@ export function EditPlaylist({ playlist, userId, close, onSave, onDelete }: { pl
 
   return <CollectionPanel title="Редактировать плейлист" close={() => { if (!busy) close(); }}>
     {error ? <Notice kind="error" text={error} /> : null}
-    <Field label="Название" value={title} onChangeText={setTitle} maxLength={80} />
-    <Field label="Ссылка на обложку" value={cover} editable={!busy} onChangeText={value => { setCover(value); setJpeg(undefined); }} maxLength={2000} />
     <PrimaryButton title="Выбрать JPEG" variant="soft" disabled={busy} onPress={() => void pickJpeg()} />
     {!!jpeg && <Text>Выбран файл {jpeg.name}</Text>}
-    {tracks.map((track, index) => <View key={track.id} style={{ gap: 5 }}>
-      <Text style={{ fontWeight: '700' }}>{track.title}</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <PrimaryButton title="Выше" variant="soft" disabled={index === 0} onPress={() => move(index, -1)} />
-        <PrimaryButton title="Ниже" variant="soft" disabled={index === tracks.length - 1} onPress={() => move(index, 1)} />
-        <PrimaryButton title="Убрать" variant="soft" onPress={() => setTracks(current => current.filter(item => item.id !== track.id))} />
-      </View>
-    </View>)}
+    <PrimaryButton title="Добавить трек" variant="soft" disabled={busy} onPress={() => setChoosing(value => !value)} />
+    {choosing && <>
+      <Field label="Найти трек" value={query} onChangeText={setQuery} />
+      {matches.slice(0, 40).map(track => <PrimaryButton key={track.id} variant="soft" disabled={busy}
+        title={[track.artist, track.title].filter(Boolean).join(' · ')} onPress={() => setAdded(previous => [...previous, track])} />)}
+      {!matches.length && <Text>Подходящих треков нет.</Text>}
+    </>}
+    {added.length > 0 && <Text>К добавлению: {added.length}</Text>}
     <PrimaryButton title="Сохранить изменения" loading={busy} onPress={() => void save()} />
     {confirmDelete ? <>
       <Text>Удалить плейлист и все записи в его списке?</Text>

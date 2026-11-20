@@ -195,5 +195,5 @@ function productAudio(value) {
 }
 for (let offset = 0; offset < tracks.length; offset += 6) await Promise.all(tracks.slice(offset, offset + 6).map(prepare));
 await writeFile('dist/track-cards.json', JSON.stringify(cards));
-await writeFile('dist/version.json', JSON.stringify({ version }));
+await writeFile('dist/version.json', JSON.stringify({ version, release: process.env.EXPO_PUBLIC_RITM_RELEASE || '1.42' }));
 console.log('Track pages: ' + tracks.length + ', recovered artwork: ' + repaired);
