@@ -7,6 +7,7 @@ import { COLORS, Field, Notice, PrimaryButton } from '../components/AuthUI';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { Draft, discardDraft, publishDraft, saveDraft } from '../lib/publishing';
+import { getWebFileContentType } from '../lib/track-cover';
 
 const limit = 50 * 1024 * 1024;
 const audioTypes: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg' };
@@ -67,7 +68,10 @@ export default function UploadScreen() {
       if (!allowed || !blob.size || blob.size > (image ? 5 * 1024 * 1024 : limit)) {
         throw new Error(image ? 'Выберите JPG, PNG или WebP до 5 МБ.' : 'Выберите MP3, WAV, FLAC, M4A, AAC или OGG до 50 МБ.');
       }
-      if (image) setCover(blob);
+      if (image) {
+        await getWebFileContentType(blob);
+        setCover(blob);
+      }
       else {
         setAudio(blob.slice(0, blob.size, type));
         setDuration(0);

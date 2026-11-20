@@ -34,6 +34,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx expo export --platform web
+      - run: node scripts/build-track-pages.mjs
       - name: Prepare web output
         run: |
           cp dist/index.html dist/404.html

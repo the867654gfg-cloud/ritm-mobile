@@ -3,7 +3,7 @@ import { Text, View } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { Field, Notice, PrimaryButton } from './AuthUI';
 
-type Daily = { track_id: string; day: string; source: string; plays: number };
+type Daily = { track_id: string; day: string; source: string; plays: number; listens: number };
 type Song = { id: string; title: string };
 const sourceNames: Record<string, string> = {
   artist: 'Страница автора', shared: 'Общий плейлист', catalog: 'Каталог', library: 'Медиатека', playlist: 'Подборки и очередь', other: 'Другие разделы',
@@ -25,7 +25,7 @@ export function CreatorStats({ userId }: { userId: string }) {
     void Promise.all([
       db.from('profiles').select('bio').eq('id', userId).single(),
       db.from('tracks').select('id,title').eq('user_id', userId),
-      db.from('ritm_daily_plays').select('track_id,day,source,plays').gte('day', previousStart),
+      db.from('ritm_daily_plays').select('track_id,day,source,plays,listens').gte('day', previousStart),
     ]).then(([profile, tracks, stats]) => {
       if (!active) return;
       if (profile.data) { setBio(profile.data.bio); setBioReady(true); }
@@ -35,7 +35,7 @@ export function CreatorStats({ userId }: { userId: string }) {
     return () => { active = false; };
   }, [userId, previousStart]);
   const recent = (rows ?? []).filter(row => row.day >= weekStart);
-  const total = (items: Daily[]) => items.reduce((sum, row) => sum + Number(row.plays), 0);
+  const total = (items: Daily[], field: 'plays' | 'listens' = 'listens') => items.reduce((sum, row) => sum + Number(row[field]), 0);
   const week = total(recent);
   const previous = total((rows ?? []).filter(row => row.day < weekStart));
   const top = songs.map(song => ({ ...song, count: total(recent.filter(row => row.track_id === song.id)) })).filter(song => song.count > 0).sort((a, b) => b.count - a.count).slice(0, 5);
@@ -48,15 +48,15 @@ export function CreatorStats({ userId }: { userId: string }) {
       const result = await supabase?.from('profiles').update({ bio: bio.trim() }).eq('id', userId);
       setMessage(result && !result.error ? { kind: 'success', text: 'Описание сохранено.' } : { kind: 'error', text: 'Не удалось сохранить описание.' });
     }} />
-    <Text style={{ fontSize: 17, fontWeight: '800' }}>Прослушивания моих треков</Text>
+    <Text style={{ fontSize: 17, fontWeight: '800' }}>Статистика моих треков</Text>
     {rows && <>
-      <Text>Сегодня (UTC) · {total(recent.filter(row => row.day === today))}</Text>
-      <Text>За последние 7 дней · {week}</Text>
+      <Text>Сегодня (UTC) · {total(recent.filter(row => row.day === today), 'plays')} запусков, {total(recent.filter(row => row.day === today))} прослушиваний</Text>
+      <Text>За последние 7 дней · {total(recent, 'plays')} запусков, {week} прослушиваний</Text>
       <Text>К предыдущим 7 дням · {week - previous > 0 ? '+' : ''}{week - previous}</Text>
       {top.length > 0 && <Text style={{ fontWeight: '800' }}>Популярные треки за 7 дней</Text>}
       {top.map(song => <Text key={song.id}>{song.title} · {song.count}</Text>)}
       {sources.length > 0 && <Text style={{ fontWeight: '800' }}>Откуда запускали треки</Text>}
-      {sources.map(source => <Text key={source}>{sourceNames[source] || source} · {total(recent.filter(row => row.source === source))}</Text>)}
+      {sources.map(source => <Text key={source}>{sourceNames[source] || source} · {total(recent.filter(row => row.source === source), 'plays')} запусков</Text>)}
     </>}
   </View>;
 }

@@ -65,7 +65,9 @@ export async function addTracksToPlaylist(userId: string, playlistId: string, tr
   return !error;
 }
 
-export async function recordListening(userId: string, track: Track, source?: string): Promise<number | undefined> {
+export type ListeningTicket = { ticket: string | null; seconds: number; starts: number };
+
+export async function recordListening(userId: string, track: Track, source?: string): Promise<ListeningTicket | undefined> {
   if (!supabase) return;
   const history = await supabase.from('listening_history').upsert(
       { user_id: userId, track_id: track.id, track_data: track, played_at: new Date().toISOString() },
@@ -73,15 +75,22 @@ export async function recordListening(userId: string, track: Track, source?: str
     );
   if (history.error) throw history.error;
   if (!source) return;
-  const { data, error } = await supabase.rpc('ritm_count_play', { track_key: track.id, play_source: source });
+  const { data, error } = await supabase.rpc('ritm_begin_listen', { track_key: track.id, play_source: source });
+  if (error) throw error;
+  return data ?? undefined;
+}
+
+export async function qualifyListening(id: string, ticket: string): Promise<number | undefined> {
+  if (!supabase) return;
+  const { data, error } = await supabase.rpc('ritm_finish_listen', { track_key: id, listen_ticket: ticket });
   if (error) throw error;
   return data == null ? undefined : Number(data);
 }
 
-export async function loadPlayCounts(trackIds: string[]): Promise<Record<string, number>> {
+export async function loadPlayCounts(trackIds: string[]): Promise<Record<string, { starts: number; listens: number }>> {
   if (!supabase || trackIds.length === 0) return {};
-  const { data } = await supabase.from('track_stats').select('track_id, play_count').in('track_id', [...new Set(trackIds)]);
-  return Object.fromEntries((data ?? []).map((row: any) => [String(row.track_id), Number(row.play_count) || 0]));
+  const { data } = await supabase.from('track_stats').select('track_id,play_count,listen_count').in('track_id', [...new Set(trackIds)]);
+  return Object.fromEntries((data ?? []).map(row => [String(row.track_id), { starts: Number(row.play_count), listens: Number(row.listen_count) }]));
 }
 
 function legacyItems<T>(key: string): T[] {

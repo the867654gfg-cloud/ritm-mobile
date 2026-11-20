@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { createContext, useContext, useState, useRef, useEffect } from 'react';
 import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { useMusic } from '../../lib/music';
@@ -8,9 +8,11 @@ import { useAuth } from '../../lib/auth';
 import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
 import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
 import { ArtistPanel } from '../../components/ArtistPanel';
+import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
+import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
-import { addTracksToPlaylist, createUserPlaylist, hasLegacyLibrary, importLegacyLibrary, loadPlayCounts, loadUserLibrary, recordListening, setFavorite, UserPlaylist } from '../../lib/user-library';
+import { addTracksToPlaylist, createUserPlaylist, hasLegacyLibrary, importLegacyLibrary, loadPlayCounts, loadUserLibrary, qualifyListening, recordListening, setFavorite, UserPlaylist, ListeningTicket } from '../../lib/user-library';
 
 function WebIcon({ name, size = 18, color = '#1c1c1e' }: { name: string; size?: number; color?: string }) {
   const paths: { [key: string]: string } = {
@@ -99,14 +101,24 @@ function formatDate(value?: string): string {
   return Number.isNaN(date.valueOf()) ? 'дата не указана' : date.toLocaleDateString('ru-RU', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
+type TrackCards = Record<string, { path: string; cover?: string | null }>;
+type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
+const TrackCardsContext = createContext<TrackCards>({});
+const trackRow = {
+  flexDirection: 'row', alignItems: 'center', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 17, marginBottom: 7,
+  borderWidth: 1, borderColor: 'rgba(255,255,255,0.62)',
+} as const;
+const trackArtwork = { width: 40, height: 40, borderRadius: 10, marginRight: 12, flexShrink: 0 } as const;
+
 function mapCloudTrack(item: any): Track {
   const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
   let resolvedCover = '';
 
-  if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
-    resolvedCover = item.cover_key.trim();
-  } else if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
+  if (item.cover_url && typeof item.cover_url === 'string' && item.cover_url.trim().startsWith('http')) {
     resolvedCover = item.cover_url.trim();
+  } else if (item.cover_key && typeof item.cover_key === 'string' && item.cover_key.trim().startsWith('http')) {
+    resolvedCover = item.cover_key.trim();
   } else if (item.cover_key) {
     const cleanKey = item.cover_key.replace(/^\/+/, '');
     resolvedCover = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanKey}`;
@@ -125,6 +137,7 @@ function mapCloudTrack(item: any): Track {
     duration: dur,
     url: item.audio_url || item.url || (/^audius_[A-Za-z0-9]{1,32}$/.test(item.id) ? 'https://api.audius.co/v1/tracks/' + item.id.slice(7) + '/stream?app_name=RITM_APP' : ''),
     cover_url: resolvedCover,
+    cover_key: item.cover_key,
     created_at: item.created_at || item.release_date || item.createdAt,
     published_at: item.published_at || item.release_date,
     user_id: item.user_id,
@@ -133,43 +146,24 @@ function mapCloudTrack(item: any): Track {
 }
 
 function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
-  const [coverUri, setCoverUri] = useState<string | null>(null);
-  const [hasError, setHasError] = useState(false);
+  const cards = useContext(TrackCardsContext);
+  const [failedUri, setFailedUri] = useState('');
+  const original = track?.cover_url || track?.cover_key || '';
+  const repair = track && cards[track.id]?.cover;
+  // User replacements use a new owner-scoped URL and should win over the last build's repair.
+  const coverUri = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
+  return <View style={[style, { overflow: 'hidden', backgroundColor: '#e5e5ea', justifyContent: 'center', alignItems: 'center' }]}>
+    {coverUri && failedUri !== coverUri
+      ? <Image source={{ uri: coverUri }} style={{ width: '100%', height: '100%' }} resizeMode="contain" onError={() => setFailedUri(coverUri)} />
+      : <Text style={{ fontSize: 20, color: '#8e8e93' }}>🎵</Text>}
+  </View>;
+}
 
-  useEffect(() => {
-    setHasError(false);
-    if (track) {
-      if (track.cover_url && typeof track.cover_url === 'string' && track.cover_url.trim().startsWith('http')) {
-        setCoverUri(track.cover_url.trim());
-        return;
-      }
-      if ((track as any).cover_key && typeof (track as any).cover_key === 'string' && (track as any).cover_key.trim().startsWith('http')) {
-        setCoverUri((track as any).cover_key.trim());
-        return;
-      }
-      if ((track as any).artwork && typeof (track as any).artwork === 'string') {
-        setCoverUri((track as any).artwork);
-        return;
-      }
-    }
-    setCoverUri(null);
-  }, [track?.id, track?.cover_url, (track as any)?.cover_key, (track as any)?.artwork]);
-
-  if (!coverUri || hasError) {
-    return (
-      <View style={[style, { backgroundColor: '#e5e5ea', justifyContent: 'center', alignItems: 'center' }]}>
-        <Text style={{ fontSize: 22, color: '#8e8e93' }}>🎵</Text>
-      </View>
-    );
-  }
-  return (
-    <Image 
-      source={{ uri: coverUri }} 
-      style={style} 
-      resizeMode="cover" 
-      onError={() => setHasError(true)} 
-    />
-  );
+function mapAudiusTrack(item: any, host: string): Track {
+  return { id: 'audius_' + item.id, title: item.title, artist: item.user?.name, genre: item.genre || '',
+    duration: item.duration || 180, url: host + '/v1/tracks/' + item.id + '/stream?app_name=RITM_APP',
+    raw_id: item.id, cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'],
+    published_at: item.release_date, description: item.description };
 }
 
 export default function CatalogRoute() {
@@ -187,6 +181,16 @@ function CatalogScreen() {
   }
 
   const { user: authUser, profile: authProfile, loading: authLoading, signOut } = useAuth();
+  const [trackCards, setTrackCards] = useState<TrackCards>({});
+  const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  const [canModerate, setCanModerate] = useState(false);
+  const [showModeration, setShowModeration] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [trackLink, setTrackLink] = useState('');
+  const [authorResults, setAuthorResults] = useState<{ id: string; username: string }[]>([]);
+  const [audiusAuthors, setAudiusAuthors] = useState<{ id: string; name: string }[]>([]);
+  const [externalArtist, setExternalArtist] = useState<{ name: string; tracks: Track[] } | null>(null);
+  const openingArtist = useRef(0);
   const compact = useWindowDimensions().width < 780;
   const [playlistEdit, setPlaylistEdit] = useState<UserPlaylist | null>(null);
   const [artistId, setArtistId] = useState<string | null>(null);
@@ -284,10 +288,9 @@ function CatalogScreen() {
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
   const [globalSearchResults, setGlobalSearchResults] = useState<Track[]>([]);
   const [hiddenTrackIds, setHiddenTrackIds] = useState<string[]>([]);
-  const [currentQueue, setCurrentQueue] = useState<Track[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
-  const [playCounts, setPlayCounts] = useState<Record<string, number>>({});
+  const [playCounts, setPlayCounts] = useState<Record<string, { starts: number; listens: number }>>({});
 
   const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music'>('main');
   
@@ -303,6 +306,11 @@ function CatalogScreen() {
 
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   const playRequest = useRef(0);
+  const queuedNext = useRef<Track[]>([]);
+  const queuePriority = useRef<string | undefined>();
+  const previousTracks = useRef<Track[]>([]);
+  const [nextTracks, setNextTracks] = useState<Track[]>([]);
+  const playback = useRef<PlaybackProgress>();
   const playContext = useRef('Слушать');
   const scopedKey = 'ritm_resume_' + (authUser?.id ?? 'guest');
   const [resumePoint, setResumePoint] = useState<{ track: Track; seconds: number } | null>(() => {
@@ -358,21 +366,50 @@ function CatalogScreen() {
 
   useEffect(() => {
     if (Platform.OS !== 'web' || !supabase) return;
+    const db = supabase;
+    let active = true;
+    void fetch(basePath + '/track-cards.json').then(response => response.ok ? response.json() : {}).then(data => {
+      if (active) setTrackCards(data);
+    }).catch(() => {});
     const params = new URL(window.location.href).searchParams;
     const author = params.get('artist');
     if (author && /^[\da-f-]{36}$/i.test(author)) setArtistId(author);
+    const trackId = params.get('track');
+    if (trackId && /^[a-zA-Z0-9_-]{1,150}$/.test(trackId)) void (async () => {
+      const status = await db.from('ritm_hidden_tracks').select('track_id').eq('track_id', trackId).maybeSingle();
+      let track: Track | undefined;
+      if (!status.data && !status.error) {
+        if (/^audius_[a-zA-Z0-9]{1,32}$/.test(trackId)) {
+          const [host] = await getAudiusHosts();
+          const response = await fetch(host + '/v1/tracks/' + trackId.slice(7) + '?app_name=RITM_APP', { signal: AbortSignal.timeout(10000) });
+          const item = (response.ok ? await response.json() : null)?.data;
+          if (item?.id) track = mapAudiusTrack(item, host);
+        } else {
+          const result = await db.from('tracks').select('*').eq('id', trackId).maybeSingle();
+          if (result.data) track = mapCloudTrack(result.data);
+        }
+      }
+      if (!active) return;
+      if (track) setSelectedTrackDetails(track);
+      else setNotice('Трек недоступен по этой ссылке.');
+    })().catch(() => { if (active) setNotice('Не удалось открыть трек по ссылке.'); });
     const id = params.get('playlist');
-    if (!id || !/^[\da-f-]{36}$/i.test(id)) return;
-    void supabase.rpc('ritm_shared_playlist', { link_id: id }).then(({ data, error }) => {
+    if (id && /^[\da-f-]{36}$/i.test(id)) void db.rpc('ritm_shared_playlist', { link_id: id }).then(({ data, error }) => {
+      if (!active) return;
       if (error || !data) setNotice('Плейлист недоступен по этой ссылке.');
       else setShared({ title: data.title, cover: data.cover, tracks: data.tracks.map(mapCloudTrack) });
     });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    const ids = [...cloudUploadedTracks, ...globalSearchResults, ...myMusicTracks].map((track) => track.id);
+    if (authUser) void supabase?.rpc('ritm_is_moderator').then(({ data }) => setCanModerate(data === true));
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    const ids = [...cloudUploadedTracks, ...globalSearchResults, ...myMusicTracks, ...(selectedTrackDetails ? [selectedTrackDetails] : [])].map(track => track.id);
     void loadPlayCounts(ids).then((counts) => setPlayCounts((previous) => ({ ...previous, ...counts })));
-  }, [cloudUploadedTracks, globalSearchResults, myMusicTracks]);
+  }, [cloudUploadedTracks, globalSearchResults, myMusicTracks, selectedTrackDetails?.id]);
 
   const fetchRecommendedMusic = async (query: string, genre: string) => {
     if (!supabase) {
@@ -390,15 +427,26 @@ function CatalogScreen() {
     let failedSources = 0;
 
     try {
-      let dbQuery = supabase.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '');
-      if (query.trim().length >= 2) dbQuery = dbQuery.ilike('title', `%${query.trim()}%`);
-      if (genre !== 'Все жанры') dbQuery = dbQuery.ilike('genre', `%${genre}%`);
-      
-      const { data: cloudData, error: cloudError } = await dbQuery.limit(50).abortSignal(controller.signal);
+      const term = query.trim();
+      const match = '%' + term.replace(/[\\%_*]/g, char => '\\' + char) + '%';
+      const catalog = () => {
+        const select = supabase!.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '');
+        return genre !== 'Все жанры' ? select.ilike('genre', genre) : select;
+      };
+      const [titles, performers, authors, visibility] = await Promise.all([
+        (term.length >= 2 ? catalog().ilike('title', match) : catalog()).limit(50).abortSignal(controller.signal),
+        term.length >= 2 ? catalog().ilike('artist', match).limit(50).abortSignal(controller.signal) : null,
+        term.length >= 2 ? supabase.from('profiles').select('id,username').ilike('username', match).limit(12).abortSignal(controller.signal) : null,
+        supabase.from('ritm_hidden_tracks').select('track_id').abortSignal(controller.signal),
+      ]);
       if (controller.signal.aborted) return;
-      if (cloudError) failedSources++;
-      if (cloudData) {
-        aggregated.push(...cloudData.map((item: any) => mapCloudTrack(item)));
+      if (titles.error || performers?.error || authors?.error || visibility.error) failedSources++;
+      setAuthorResults(authors?.data ?? []);
+      aggregated.push(...[...(titles.data ?? []), ...(performers?.data ?? [])].map(mapCloudTrack));
+      if (authors?.data?.length) {
+        const own = await catalog().in('user_id', authors.data.map(author => author.id)).limit(50).abortSignal(controller.signal);
+        if (controller.signal.aborted) return;
+        if (own.data) aggregated.push(...own.data.map(mapCloudTrack));
       }
 
       const hosts = await getAudiusHosts();
@@ -416,30 +464,27 @@ function CatalogScreen() {
         ];
       }
 
-      const responses = await Promise.all(urlsToFetch.map(u => fetch(u, { signal: controller.signal }).then(r => r.json()).catch(() => null)));
+      const [responses, accountResults] = await Promise.all([
+        Promise.all(urlsToFetch.map(u => fetch(u, { signal: controller.signal }).then(r => r.json()).catch(() => null))),
+        term.length >= 2 ? fetch(host + '/v1/users/search?query=' + encodeURIComponent(term) + '&limit=8&app_name=RITM_APP', { signal: controller.signal })
+          .then(r => r.ok ? r.json() : null).catch(() => null) : null,
+      ]);
       
       if (controller.signal.aborted) return;
+      setAudiusAuthors(Array.isArray(accountResults?.data) ? accountResults.data.filter((item: any) =>
+        typeof item.name === 'string' && /^[a-zA-Z0-9]{1,32}$/.test(item.id)) : []);
       if (responses.every(r => !r)) failedSources++;
 
       responses.forEach((res) => {
         if (res && res.data && Array.isArray(res.data)) {
-          const items = res.data.map((item: any) => ({
-            id: `audius_${item.id}`,
-            title: item.title,
-            artist: item.user?.name || '',
-            genre: item.genre || 'Deep House',
-            duration: item.duration || 180,
-            url: `${host}/v1/tracks/${item.id}/stream?app_name=RITM_APP`,
-            raw_id: item.id,
-            cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'] || '',
-            published_at: item.release_date,
-            description: item.description,
-          }));
+          const items = res.data.map((item: any) => mapAudiusTrack(item, host))
+            .filter((track: Track) => genre === 'Все жанры' || track.genre.toLowerCase() === genre.toLowerCase());
           aggregated.push(...items);
         }
       });
 
-      const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !hiddenTrackIds.includes(t.id));
+      const omitted = new Set([...hiddenTrackIds, ...(visibility.data ?? []).map(item => item.track_id)]);
+      const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !omitted.has(t.id));
       setGlobalSearchResults(filtered);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
@@ -455,12 +500,51 @@ function CatalogScreen() {
     return () => clearTimeout(timer);
   }, [searchQuery, selectedGenre, hiddenTrackIds]);
 
+  const openAudiusArtist = async (author: { id: string; name: string }) => {
+    const request = ++openingArtist.current;
+    try {
+      const [host] = await getAudiusHosts();
+      const [response, visibility] = await Promise.all([
+        fetch(host + '/v1/users/' + author.id + '/tracks?limit=50&app_name=RITM_APP', { signal: AbortSignal.timeout(10000) }),
+        supabase?.from('ritm_hidden_tracks').select('track_id'),
+      ]);
+      if (!response.ok || visibility?.error) throw new Error();
+      const json = await response.json();
+      const hidden = new Set((visibility?.data ?? []).map(item => item.track_id));
+      if (request === openingArtist.current) setExternalArtist({
+        name: author.name, tracks: (json.data ?? []).map((item: any) => mapAudiusTrack(item, host)).filter((track: Track) => !hidden.has(track.id)),
+      });
+    } catch {
+      if (request === openingArtist.current) setNotice('Не удалось открыть исполнителя Audius.');
+    }
+  };
+
   useEffect(() => () => { searchAbortRef.current?.abort(); }, []);
   useEffect(() => () => {
     playRequest.current++;
     webAudioRef.current?.pause();
     m.clearTrack?.();
   }, []);
+
+  function countPlayback(audio: HTMLAudioElement) {
+    const session = playback.current;
+    if (!session) return;
+    const now = performance.now();
+    const elapsed = (now - session.time) / 1000;
+    const progress = (audio.currentTime - session.position) / Math.max(audio.playbackRate, 0.1);
+    if (!audio.seeking && (!audio.paused || audio.ended) && progress > 0 && progress <= elapsed + 0.75) {
+      session.seconds += Math.min(elapsed, progress);
+    }
+    session.time = now;
+    session.position = audio.currentTime;
+    const ticket = session.ticket;
+    if (!ticket?.ticket || session.sending || session.seconds + 0.05 < ticket.seconds) return;
+    session.sending = true;
+    void qualifyListening(session.id, ticket.ticket).then(listens => {
+      if (listens === undefined) { session.sending = false; return; }
+      setPlayCounts(previous => ({ ...previous, [session.id]: { starts: previous[session.id]?.starts ?? ticket.starts, listens } }));
+    }).catch(() => { session.sending = false; });
+  }
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -475,7 +559,8 @@ function CatalogScreen() {
       webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
       const audio = webAudioRef.current;
       
-      const updateTime = () => { 
+      const updateTime = () => {
+        countPlayback(audio);
         if (!isDraggingSeek) {
           const dur = audio.duration || trackDuration || 0;
           if (dur > 0) {
@@ -496,14 +581,29 @@ function CatalogScreen() {
 
       audio.addEventListener('timeupdate', updateTime);
       audio.addEventListener('loadedmetadata', updateDuration);
-      audio.addEventListener('ended', handleNext);
+      const ended = () => {
+        countPlayback(audio);
+        if (isRepeat && m.currentTrack) void safePlayTrack(m.currentTrack, undefined, playContext.current, 0, true);
+        else handleNext();
+      };
+      const resetClock = () => {
+        if (playback.current) {
+          playback.current.time = performance.now();
+          playback.current.position = audio.currentTime;
+        }
+      };
+      audio.addEventListener('seeking', resetClock);
+      audio.addEventListener('playing', resetClock);
+      audio.addEventListener('ended', ended);
       return () => {
         audio.removeEventListener('timeupdate', updateTime);
         audio.removeEventListener('loadedmetadata', updateDuration);
-        audio.removeEventListener('ended', handleNext);
+        audio.removeEventListener('ended', ended);
+        audio.removeEventListener('seeking', resetClock);
+        audio.removeEventListener('playing', resetClock);
       };
     }
-  }, [isDraggingSeek, currentQueue, isShuffle, trackDuration, m?.currentTrack, m?.playbackSpeed]);
+  }, [isDraggingSeek, isShuffle, isRepeat, trackDuration, m?.currentTrack, m?.playbackSpeed]);
 
   const updateSeekPosition = (clientX: number) => {
     const activeDuration = m?.currentTrack?.duration || trackDuration || 0;
@@ -558,12 +658,26 @@ function CatalogScreen() {
     try { if (typeof m?.pauseTrack === 'function') m.pauseTrack(); } catch (e) {}
   };
 
-  const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0) => {
+  const setUpcoming = (items: Track[]) => { queuedNext.current = items; setNextTracks(items); };
+
+  const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0, fromQueue = false, back = false) => {
     const request = ++playRequest.current;
+    if (supabase && (Platform.OS !== 'web' || navigator.onLine)) {
+      const visible = await supabase.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).maybeSingle();
+      if (request !== playRequest.current) return;
+      if (visible.data || visible.error) { setNotice('Этот трек сейчас недоступен.'); return; }
+    }
+    const last = m.currentTrack as Track | null;
+    if (!back && last && last.id !== track.id) previousTracks.current = [...previousTracks.current, last].slice(-60);
     playContext.current = context || 'Слушать';
     stopAudio();
-    if (queueList && queueList.length > 0) setCurrentQueue(queueList);
-    else setCurrentQueue(globalSearchResults);
+    playback.current = undefined;
+    if (!fromQueue) {
+      const list = queueList ?? globalSearchResults;
+      const priority = queuedNext.current.find(item => item.id === queuePriority.current && item.id !== track.id);
+      const start = list.findIndex(item => item.id === track.id);
+      setUpcoming([...(priority ? [priority] : []), ...list.slice(start + 1).filter(item => item.id !== track.id && item.id !== priority?.id)]);
+    }
 
     let playableTrack = track;
     try {
@@ -608,10 +722,14 @@ function CatalogScreen() {
         if (startAt > 0 && startAt < audio.duration) audio.currentTime = startAt;
         setRecentlyPlayed(previous => [track, ...previous.filter(item => item.id !== track.id)].slice(0, 30));
         if (authUser) {
+          const entry: PlaybackProgress = { id: track.id, seconds: 0, time: performance.now(), position: audio.currentTime };
+          playback.current = entry;
           const source = context === 'Автор' ? 'artist' : context === 'Общий плейлист' ? 'shared'
             : context === 'Моя музыка' ? 'library' : context === 'Слушать' ? 'catalog' : 'playlist';
-          void recordListening(authUser.id, track, source).then(count => {
-            if (count !== undefined) setPlayCounts(previous => ({ ...previous, [track.id]: count }));
+          void recordListening(authUser.id, track, source).then(ticket => {
+            if (!ticket) return;
+            entry.ticket = ticket;
+            setPlayCounts(previous => ({ ...previous, [track.id]: { starts: ticket.starts, listens: previous[track.id]?.listens ?? 0 } }));
           }).catch(() => setNotice('Не удалось синхронизировать прослушивание.'));
         }
       } catch {
@@ -623,32 +741,34 @@ function CatalogScreen() {
     }
   };
 
-  const playTrackAtIndex = (index: number, currentList: Track[], contextTitle: string) => {
-    if (currentList.length === 0) return;
-    const nextIndex = (index + currentList.length) % currentList.length;
-    const targetTrack = currentList[nextIndex];
-    if (targetTrack) void safePlayTrack(targetTrack, currentList, contextTitle);
-  };
-
   const handleNext = () => {
-    const activeList = currentQueue.length > 0 ? currentQueue : globalSearchResults;
-    if (activeList.length === 0) return;
-    if (isShuffle) {
-      playTrackAtIndex(Math.floor(Math.random() * activeList.length), activeList, playContext.current);
-      return;
-    }
-    const currentIndex = activeList.findIndex(t => t.id === m?.currentTrack?.id);
-    playTrackAtIndex(currentIndex !== -1 ? currentIndex + 1 : 0, activeList, playContext.current);
+    const items = queuedNext.current;
+    if (!items.length) { void m.pauseTrack(); return; }
+    const priorityIndex = items.findIndex(item => item.id === queuePriority.current);
+    const index = priorityIndex >= 0 ? priorityIndex : isShuffle ? Math.floor(Math.random() * items.length) : 0;
+    queuePriority.current = undefined;
+    setUpcoming(items.filter((_, i) => i !== index));
+    void safePlayTrack(items[index], undefined, playContext.current, 0, true);
   };
 
   const handlePrevious = () => {
-    const activeList = currentQueue.length > 0 ? currentQueue : globalSearchResults;
-    if (activeList.length === 0) return;
-    const currentIndex = activeList.findIndex(t => t.id === m?.currentTrack?.id);
-    playTrackAtIndex(currentIndex !== -1 ? currentIndex - 1 : activeList.length - 1, activeList, playContext.current);
+    const track = previousTracks.current.pop();
+    if (!track) return;
+    const current = m.currentTrack as Track | null;
+    if (current) setUpcoming([current, ...queuedNext.current.filter(item => item.id !== current.id)]);
+    void safePlayTrack(track, undefined, playContext.current, 0, true, true);
+  };
+
+  const playNext = (track: Track) => {
+    queuePriority.current = track.id;
+    setUpcoming([track, ...queuedNext.current.filter(item => item.id !== track.id)]);
+    setSelectedTrackMenu(null);
+    setSelectedTrackDetails(null);
+    setNotice('Следующим будет «' + track.title + '».');
   };
 
   const handleTogglePlay = async () => {
+    if (!m.currentTrack && queuedNext.current.length) { handleNext(); return; }
     if (Platform.OS === 'web' && webAudioRef.current && webAudioRef.current.src) {
       if (webAudioRef.current.paused) {
         m?.attachAudioElement?.(webAudioRef.current);
@@ -879,6 +999,7 @@ function CatalogScreen() {
   }, [m.currentTrack?.id, m.isPlaying]);
 
   return (
+    <TrackCardsContext.Provider value={trackCards}>
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
       <View style={{ flex: 1, flexDirection: compact ? 'column' : 'row', overflow: 'hidden' }}>
         
@@ -919,6 +1040,7 @@ function CatalogScreen() {
             )}
             {showProfileMenu && userProfile.isLoggedIn ? (
               <View style={{ marginTop: 8, backgroundColor: '#ffffff', borderRadius: 12, padding: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3 }}>
+                {canModerate && <PrimaryButton title="Модерация" variant="soft" onPress={() => { setShowProfileMenu(false); setShowModeration(true); }} />}
                 <Pressable onPress={() => { setShowProfileMenu(false); router.push('/profile'); }} style={{ paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, outlineStyle: 'none' as any }}>
                   <Text style={{ fontSize: 13, fontWeight: '700', color: '#1c1c1e' }}>Мой профиль</Text>
                   <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{userProfile.phoneOrEmail}</Text>
@@ -1053,7 +1175,7 @@ function CatalogScreen() {
               </View>}
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
                 <TextInput 
-                  placeholder="Поиск музыки..." 
+                  placeholder="Поиск треков и исполнителей..."
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
@@ -1130,8 +1252,13 @@ function CatalogScreen() {
                 </ScrollView>
               </View>
 
+              {searchQuery.trim().length >= 2 && (authorResults.length > 0 || audiusAuthors.length > 0) && <View style={{ gap: 8, marginBottom: 18 }}>
+                <Text style={{ fontWeight: '800', color: '#292930' }}>Авторы и исполнители</Text>
+                {authorResults.map(author => <PrimaryButton key={author.id} title={author.username + ' · Ритм'} variant="soft" onPress={() => setArtistId(author.id)} />)}
+                {audiusAuthors.map(author => <PrimaryButton key={'audius_' + author.id} title={author.name + ' · Audius'} variant="soft" onPress={() => void openAudiusArtist(author)} />)}
+              </View>}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
-                Рекомендуемые треки ({globalSearchResults.length})
+                {searchQuery.trim().length >= 2 ? 'Треки' : 'Рекомендуемые треки'} ({globalSearchResults.length})
               </Text>
 
               {isSearching && <ActivityIndicator size="small" color="#fa233b" style={{ marginVertical: 12 }} />}
@@ -1151,35 +1278,20 @@ function CatalogScreen() {
                 return (
                   <View 
                     key={item.id} 
-                    style={{ 
-                      flexDirection: 'row', 
-                      alignItems: 'center', 
-                      backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', 
-                      backdropFilter: 'blur(16px)' as any,
-                      padding: 10, 
-                      borderRadius: 14, 
-                      marginBottom: 8, 
-                      borderWidth: 1, 
-                      borderColor: isSelected ? 'rgba(250, 35, 59, 0.4)' : 'rgba(255, 255, 255, 0.7)',
-                      shadowColor: '#000',
-                      shadowOffset: { width: 0, height: 2 },
-                      shadowOpacity: 0.03,
-                      shadowRadius: 4,
-                      elevation: 1
-                    }}
+                    style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}
                   >
                     <Pressable onPress={() => void safePlayTrack(item, globalSearchResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
-                      <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
+                      <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
-                        {item.artist ? <Text numberOfLines={1} style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>{item.artist}</Text> : null}
+                        <Text numberOfLines={1} style={{ fontSize: 11, color: '#686871' }}>{[item.artist, item.id.startsWith('audius_') ? 'Audius' : 'Ритм'].filter(Boolean).join(' · ')}</Text>
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable 
+                    <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека ' + item.title}
                       onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'network' }); }} 
                       style={{ 
-                        padding: 10, 
+                        padding: 8,
                         zIndex: 10,
                         backgroundColor: 'rgba(0, 0, 0, 0.05)',
                         borderRadius: 8,
@@ -1210,7 +1322,7 @@ function CatalogScreen() {
                 const isSelected = m?.currentTrack?.id === item.id;
                 const isChecked = selectedTrackIds.includes(item.id);
                 return (
-                  <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(16px)' as any, padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
+                  <View key={item.id} style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}>
                     <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
                       <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                         {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
@@ -1218,7 +1330,7 @@ function CatalogScreen() {
                     </Pressable>
 
                     <Pressable onPress={() => void safePlayTrack(item, cloudUploadedTracks, 'Загруженные')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
-                      <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
+                      <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
                         <View style={{ backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
@@ -1324,7 +1436,7 @@ function CatalogScreen() {
                   const isSelected = m?.currentTrack?.id === item.id;
                   const isChecked = selectedTrackIds.includes(item.id);
                   return (
-                    <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? 'rgba(250, 35, 59, 0.08)' : 'rgba(255, 255, 255, 0.8)', padding: 10, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: isSelected ? '#fa233b' : 'rgba(255, 255, 255, 0.7)', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1 }}>
+                    <View key={item.id} style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}>
                       <Pressable onPress={() => toggleSelectTrack(item.id)} style={{ padding: 6, marginRight: 8, outlineStyle: 'none' as any }}>
                         <View style={{ width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: '#fa233b', backgroundColor: isChecked ? '#fa233b' : 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                           {isChecked && <WebIcon name="checkmark" size={12} color="#ffffff" />}
@@ -1332,7 +1444,7 @@ function CatalogScreen() {
                       </Pressable>
 
                       <Pressable onPress={() => void safePlayTrack(item, myMusicTracks, 'Моя музыка')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
-                        <TrackCoverImage track={item} style={{ width: 50, height: 50, borderRadius: 8, marginRight: 14 }} />
+                        <TrackCoverImage track={item} style={trackArtwork} />
                         <View style={{ flex: 1 }}>
                           <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
                         </View>
@@ -1536,6 +1648,11 @@ function CatalogScreen() {
           </Pressable>
         </View>
       </View>
+
+      <Pressable accessibilityRole="button" accessibilityLabel="Очередь воспроизведения" onPress={() => setShowQueue(true)}
+        style={{ position: 'absolute', zIndex: 110, right: compact ? 14 : 24, bottom: compact ? 147 : 118, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 7 }}>
+        <Text style={{ fontWeight: '800', color: '#292930' }}>Далее{nextTracks.length ? ' · ' + nextTracks.length : ''}</Text>
+      </Pressable>
 
       {/* МОДАЛЬНЫЕ ОКНА */}
       <Modal animationType="fade" transparent visible={showCreatePlaylistModal}>
@@ -1879,12 +1996,22 @@ function CatalogScreen() {
                 <View style={{ marginTop: 18, gap: 8 }}>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Исполнитель: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.artist || 'Неизвестен'}</Text></Text>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Опубликован: <Text style={{ color: '#fff', fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
-                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Прослушиваний: <Text style={{ color: '#fff', fontWeight: '700' }}>{(playCounts[selectedTrackDetails.id] || 0).toLocaleString('ru-RU')}</Text></Text>
+                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Запусков: {(playCounts[selectedTrackDetails.id]?.starts ?? 0).toLocaleString('ru-RU')}</Text>
+                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Прослушиваний: {(playCounts[selectedTrackDetails.id]?.listens ?? 0).toLocaleString('ru-RU')}</Text>
                 </View>
                 <Pressable onPress={() => { void safePlayTrack(selectedTrackDetails); setSelectedTrackDetails(null); }} style={{ marginTop: 20, backgroundColor: '#fa233b', paddingVertical: 13, borderRadius: 14, alignItems: 'center' }}>
                   <Text style={{ color: '#fff', fontWeight: '900' }}>Слушать</Text>
                 </Pressable>
                 <View style={{ gap: 8, marginTop: 12 }}>
+                  <PrimaryButton variant="soft" title="Играть следующим" onPress={() => playNext(selectedTrackDetails)} />
+                  {Platform.OS === 'web' && <PrimaryButton variant="soft" title="Поделиться треком" onPress={() => {
+                    const url = new URL(trackCards[selectedTrackDetails.id]?.path ?? basePath + '/?track=' + encodeURIComponent(selectedTrackDetails.id), window.location.origin);
+                    setSelectedTrackDetails(null);
+                    setTrackLink(url.href);
+                  }} />}
+                  {selectedTrackDetails.user_id && selectedTrackDetails.user_id === authUser?.id && <PrimaryButton variant="soft" title="Редактировать трек" onPress={() => {
+                    setEditingTrack(selectedTrackDetails); setSelectedTrackDetails(null);
+                  }} />}
                   {selectedTrackDetails.description ? <Text style={{ color: '#eee' }}>{selectedTrackDetails.description}</Text> : null}
                   <PrimaryButton variant="soft" title={myMusicTracks.some(track => track.id === selectedTrackDetails.id) ? 'Убрать из избранного' : 'В избранное'} onPress={() => {
                     if (!authUser) setSelectedTrackDetails(null);
@@ -1950,6 +2077,9 @@ function CatalogScreen() {
                 <Text style={{ color: '#fff', fontSize: 19, width: 20, textAlign: 'center' }}>i</Text>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#fff', marginLeft: 12 }}>О треке</Text>
               </Pressable>
+              {selectedTrackIds.length < 2 && <PrimaryButton variant="soft" title="Играть следующим" onPress={() => playNext(selectedTrackMenu.track)} />}
+              {selectedTrackMenu.source === 'uploads' && selectedTrackMenu.track.user_id === authUser?.id && selectedTrackIds.length < 2 &&
+                <PrimaryButton variant="soft" title="Редактировать трек" onPress={() => { setEditingTrack(selectedTrackMenu.track); setSelectedTrackMenu(null); }} />}
 
               <Pressable 
                 onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
@@ -2037,6 +2167,56 @@ function CatalogScreen() {
           )}
         </View>
       </Modal>
+      {showQueue && <CollectionPanel title="Очередь «Далее»" close={() => setShowQueue(false)}>
+        {!nextTracks.length && <Text>Добавь трек через «Играть следующим».</Text>}
+        {nextTracks.map((track, index) => <View key={track.id} style={{ gap: 6, paddingBottom: 8 }}>
+          <Text numberOfLines={2} style={{ fontWeight: '800' }}>{track.title}</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {[-1, 1].map(offset => <PrimaryButton key={offset} title={offset < 0 ? 'Выше' : 'Ниже'} variant="soft"
+              disabled={index + offset < 0 || index + offset >= nextTracks.length} onPress={() => {
+                const items = [...queuedNext.current];
+                [items[index], items[index + offset]] = [items[index + offset], items[index]];
+                queuePriority.current = items[0]?.id;
+                setUpcoming(items);
+              }} />)}
+            <PrimaryButton title="Убрать" variant="soft" onPress={() => {
+              const items = queuedNext.current.filter(item => item.id !== track.id);
+              if (queuePriority.current === track.id) queuePriority.current = items[0]?.id;
+              setUpcoming(items);
+            }} />
+          </View>
+        </View>)}
+      </CollectionPanel>}
+      {trackLink && <CollectionPanel title="Поделиться треком" close={() => setTrackLink('')}>
+        <Text selectable>{trackLink}</Text>
+        <PrimaryButton title="Скопировать ссылку" onPress={() => {
+          if (!navigator.clipboard) { setNotice('Выдели ссылку и скопируй её вручную.'); return; }
+          void navigator.clipboard.writeText(trackLink).then(() => { setTrackLink(''); setNotice('Ссылка скопирована.'); })
+            .catch(() => setNotice('Выдели ссылку и скопируй её вручную.'));
+        }} />
+      </CollectionPanel>}
+      {externalArtist && <CollectionPanel title={externalArtist.name + ' · Audius'} close={() => setExternalArtist(null)}>
+        {externalArtist.tracks.length ? <TrackList tracks={externalArtist.tracks} play={track => {
+          void safePlayTrack(track, externalArtist.tracks, 'Автор'); setExternalArtist(null);
+        }} /> : <Text>Нет доступных треков.</Text>}
+      </CollectionPanel>}
+      {editingTrack && authUser && <EditTrack track={editingTrack} userId={authUser.id} close={() => setEditingTrack(null)} onSave={updated => {
+        const swap = (tracks: Track[]) => tracks.map(track => track.id === updated.id ? updated : track);
+        setCloudUploadedTracks(swap);
+        setGlobalSearchResults(swap);
+        setMyMusicTracks(swap);
+        setUpcoming(swap(queuedNext.current));
+        setEditingTrack(null);
+        setSelectedTrackDetails(updated);
+        setNotice('Изменения сохранены.');
+      }} />}
+      {showModeration && canModerate && <ModerationPanel close={() => setShowModeration(false)} onVisibility={(id, hide) => {
+        setHiddenTrackIds(previous => hide ? [...new Set([...previous, id])] : previous.filter(item => item !== id));
+        if (hide) {
+          setUpcoming(queuedNext.current.filter(track => track.id !== id));
+          if (m.currentTrack?.id === id) { stopAudio(); m.clearTrack(); }
+        }
+      }} />}
       {playlistEdit && <EditPlaylist playlist={playlistEdit} close={() => setPlaylistEdit(null)} onSave={() => {
         setPlaylistEdit(null); void refreshLibrary();
       }} />}
@@ -2062,5 +2242,6 @@ function CatalogScreen() {
         }} />
       </CollectionPanel>}
     </View>
+    </TrackCardsContext.Provider>
   );
 }

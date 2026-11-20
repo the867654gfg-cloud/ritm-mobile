@@ -26,14 +26,16 @@ export function ArtistPanel({ id, viewer, close, mapTrack, play, signIn }: {
       db.from('tracks').select('*').eq('user_id', id).order('published_at', { ascending: false, nullsFirst: false }),
       db.rpc('ritm_follower_count', { artist_id: id }),
       viewer ? db.from('ritm_follows').select('artist').eq('follower', viewer).eq('artist', id).maybeSingle() : null,
-    ]).then(([profile, songs, count, follow]) => {
+      db.from('ritm_hidden_tracks').select('track_id'),
+    ]).then(([profile, songs, count, follow, visibility]) => {
       if (!active) return;
       if (profile.error || !profile.data || songs.error || count.error || follow?.error) {
         setError('Не удалось загрузить страницу автора.');
         return;
       }
       setArtist(profile.data);
-      setTracks((songs.data || []).map(mapTrack));
+      const hidden = new Set((visibility.data ?? []).map(item => item.track_id));
+      setTracks((songs.data || []).filter(song => !hidden.has(song.id)).map(mapTrack));
       setFollowers(Number(count.data) || 0);
       setFollowing(Boolean(follow?.data));
     });
