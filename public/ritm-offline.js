@@ -1,5 +1,6 @@
 const SHELL = 'ritm-shell-v1';
 const MUSIC = 'ritm-music-v1';
+let lastFile;
 const root = new URL(self.registration.scope);
 const isMusic = url => url.protocol === 'https:' && url.hostname.endsWith('.supabase.co')
   && url.pathname.startsWith('/storage/v1/object/public/music-storage/')
@@ -53,13 +54,18 @@ self.addEventListener('fetch', event => {
       if (!range) return cached;
       const match = /^bytes=(\d+)-(\d*)$/.exec(range);
       if (!match) return fetch(event.request);
-      const file = await cached.blob();
+      const fingerprint = cached.headers.get('etag') || cached.headers.get('last-modified');
+      if (!lastFile || lastFile.url !== url.href || lastFile.fingerprint !== fingerprint) {
+        lastFile = { url: url.href, fingerprint, blob: cached.blob() };
+      }
+      const file = await lastFile.blob;
       const start = Number(match[1]);
       const end = Math.min(file.size - 1, match[2] ? Number(match[2]) : file.size - 1);
       if (start > end) return new Response(null, { status: 416, headers: { 'Content-Range': 'bytes */' + file.size } });
       return new Response(file.slice(start, end + 1), { status: 206, headers: {
         'Content-Range': 'bytes ' + start + '-' + end + '/' + file.size,
         'Content-Length': String(end - start + 1),
+        'Accept-Ranges': 'bytes',
         'Content-Type': file.type || 'audio/mpeg',
       } });
     })());

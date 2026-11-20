@@ -16,7 +16,10 @@ export function registerOfflineShell() {
 }
 
 export function offlineTracks(): Track[] {
-  try { return JSON.parse(localStorage.getItem(listKey) || '[]'); } catch { return []; }
+  try {
+    const items = JSON.parse(localStorage.getItem(listKey) || '[]');
+    return Array.isArray(items) ? items.filter(item => item && typeof item.url === 'string' && item.id) : [];
+  } catch { return []; }
 }
 
 export async function rememberOffline(track: Track) {
@@ -31,8 +34,7 @@ export async function rememberOffline(track: Track) {
   const cache = await caches.open(MUSIC);
   if (!await cache.match(url.href)) await cache.add(url.href);
   const previous = offlineTracks().filter(item => item.id !== track.id);
-  localStorage.setItem(listKey, JSON.stringify([track, ...previous.slice(0, 4)]));
-  for (const removed of previous.slice(4)) if (removed.url) await cache.delete(removed.url);
+  localStorage.setItem(listKey, JSON.stringify([track, ...previous]));
 }
 
 export async function clearOffline() {
