@@ -119,6 +119,8 @@ async function prepare(track) {
   let quality;
   let music;
   let audioPrefix;
+  let artist;
+  let album;
   let validCover = Boolean(cover && !ownStorage(cover));
   try {
     if (ownStorage(cover)) {
@@ -150,17 +152,30 @@ async function prepare(track) {
     try {
       audioPrefix ??= await readPrefix(track.audio_url, 2 * 1024 * 1024);
       if (audioPrefix) {
-        const { format, common } = await parseBuffer(audioPrefix, undefined, { skipCovers: true });
+        const { format, common } = await parseBuffer(audioPrefix, undefined, { skipCovers: Boolean(validCover || repairedCover) });
+        artist = common.artist?.trim().slice(0, 100) || undefined;
+        album = common.album?.trim().slice(0, 150) || undefined;
         if (common.bpm || common.key) music = { bpm: common.bpm, key: common.key };
         if (format.container === 'MPEG' && format.codec?.includes('Layer 3') && format.codecProfile === 'CBR' && format.bitrate > 0) {
           quality = { format: 'MP3', kbps: Math.round(format.bitrate / 1000) };
+        }
+        if (!validCover && !repairedCover) {
+          const pictures = common.picture ?? [];
+          const picture = pictures.find(item => /front/i.test(item.type || '')) ?? pictures[0];
+          if (picture && picture.data.length <= 5 * 1024 * 1024) {
+            const filename = track.id + '-embedded.webp';
+            await sharp(picture.data).rotate().resize(640, 640, { fit: 'inside', withoutEnlargement: true })
+              .webp({ quality: 85 }).toFile(resolve('dist/track-covers', filename));
+            repairedCover = new URL('track-covers/' + filename, site).pathname;
+            repaired++;
+          }
         }
       }
     } catch { /* Some containers keep their metadata at the end of the file. */ }
   }
   const share = new URL('t/' + track.id + '/', site);
   const image = new URL(repairedCover || (validCover && cover ? cover.href : 'ritm-icon.png'), site);
-  cards[track.id] = { path: share.pathname, thumbnail, quality, music, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
+  cards[track.id] = { path: share.pathname, thumbnail, quality, music, artist, album, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
   const redirect = new URL('?track=' + encodeURIComponent(track.id), site);
   const title = track.title + ' · Ритм';
   const description = [track.artist, track.description].filter(Boolean).join(' · ').slice(0, 200) || 'Слушать в Ритме';

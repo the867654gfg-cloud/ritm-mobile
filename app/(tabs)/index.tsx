@@ -1,3 +1,4 @@
+import { UploadForm } from '../../components/UploadForm';
 import { RememberedScroll } from '../../components/RememberedScroll';
 import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
@@ -12,7 +13,7 @@ import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
 import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
 import { ArtistPanel } from '../../components/ArtistPanel';
 import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
-import { searchScore, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
+import { searchScore, splitTrackTitle, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
 import { BatchTrackEditor, type TrackMetadata } from '../../components/BatchTrackEditor';
 import { EqualizerPanel } from '../../components/EqualizerPanel';
 import { TrackQuality } from '../../components/TrackQuality';
@@ -118,7 +119,7 @@ function formatDate(value?: string): string {
 }
 
 const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
-type TrackCards = Record<string, { path: string; thumbnail?: string; music?: MusicTags; cover?: string | null; quality?: { format: string; kbps: number } }>;
+type TrackCards = Record<string, { path: string; thumbnail?: string; music?: MusicTags; cover?: string | null; artist?: string; album?: string; quality?: { format: string; kbps: number } }>;
 type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
 const TrackCardsContext = createContext<TrackCards>({});
 const trackRow = {
@@ -166,17 +167,32 @@ function mapCloudTrack(item: any): Track {
   };
 }
 
+function TrackByline({ track, extras = [] }: { track: Track; extras?: string[] }) {
+  const cards = useContext(TrackCardsContext);
+  const card = cards[track.id];
+  const artist = track.artist?.trim() || card?.artist || splitTrackTitle(track.title).artist || 'Исполнитель не указан';
+  const album = track.album?.trim() || card?.album;
+  return <Text numberOfLines={2} style={{ fontSize: 11, color: '#686871' }}>
+    {[artist, album, ...extras].filter(Boolean).join(' · ')}
+  </Text>;
+}
+
 function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
   const cards = useContext(TrackCardsContext);
-  const [failedUri, setFailedUri] = useState('');
+  const [failedUris, setFailedUris] = useState<string[]>([]);
   const original = track?.cover_url || track?.cover_key || '';
   const repair = track && cards[track.id]?.cover;
   // User replacements use a new owner-scoped URL and should win over the last build's repair.
-  const coverUri = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
-  return <View style={[style, { overflow: 'hidden', backgroundColor: '#e5e5ea', justifyContent: 'center', alignItems: 'center' }]}>
-    {coverUri && failedUri !== coverUri
-      ? <Image source={{ uri: coverUri }} style={{ width: '100%', height: '100%' }} resizeMode="contain" onError={() => setFailedUri(coverUri)} />
-      : <Text style={{ fontSize: 20, color: '#8e8e93' }}>🎵</Text>}
+  const preferred = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : original || repair || '';
+  const coverUri = failedUris.includes(preferred) && repair && repair !== preferred ? repair : preferred;
+  const hasCover = Boolean(coverUri && !failedUris.includes(coverUri));
+  const colors = ['#49265a', '#244855', '#573041', '#293b66', '#49425f'];
+  const color = colors[(track?.id.charCodeAt(0) || 0) % colors.length];
+  const initial = track?.title.trim().match(/[\p{L}\p{N}]/u)?.[0].toUpperCase() ?? '♪';
+  return <View style={[style, { overflow: 'hidden', backgroundColor: hasCover ? '#e5e5ea' : color, justifyContent: 'center', alignItems: 'center' }]}>
+    {hasCover
+      ? <Image source={{ uri: coverUri }} style={{ width: '100%', height: '100%' }} resizeMode="contain" onError={() => setFailedUris(previous => [...previous, coverUri])} />
+      : <Text accessibilityLabel="Обложка по умолчанию" style={{ fontSize: typeof style?.width === 'number' && style.width <= 60 ? 17 : 40, fontWeight: '800', color: '#ffffffdd' }}>{initial}</Text>}
   </View>;
 }
 
@@ -345,11 +361,12 @@ function CatalogScreen() {
   const [searchError, setSearchError] = useState(false);
   const [playCounts, setPlayCounts] = useState<Record<string, { starts: number; listens: number }>>({});
 
-  const listPositions = useRef({ main: { y: 0 }, uploads: { y: 0 }, my_music: { y: 0 }, downloads: { y: 0 } });
+  const listPositions = useRef({ main: { y: 0 }, uploads: { y: 0 }, my_music: { y: 0 } });
   const [updateReady, setUpdateReady] = useState(false);
   const updatePending = useRef(false);
+  const [showUploadPanel, setShowUploadPanel] = useState(false);
   const editingInProgress = useRef(false);
-  editingInProgress.current = Boolean(editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack);
+  editingInProgress.current = Boolean(showUploadPanel || editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack);
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const current = document.querySelector('meta[name="ritm-version"]')?.getAttribute('content');
@@ -372,7 +389,7 @@ function CatalogScreen() {
     window.addEventListener('focus', check);
     return () => { clearInterval(timer); window.removeEventListener('focus', check); controller.abort(); };
   }, []);
-  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music' | 'downloads'>(() => authUser && typeof navigator !== 'undefined' && !navigator.onLine ? 'downloads' : 'main');
+  const [activeTab, setActiveTab] = useState<'main' | 'uploads' | 'my_music'>('main');
   
   const [volume, setVolume] = useState(0.7);
   const [prevVolume, setPrevVolume] = useState(0.7);
@@ -395,7 +412,6 @@ function CatalogScreen() {
   }
   useEffect(() => cancelPendingSeek, []);
   const [trackDuration, setTrackDuration] = useState(0);
-  const [isDraggingVolume, setIsDraggingVolume] = useState(false);
 
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   const [activeAudio, setActiveAudio] = useState<HTMLAudioElement | null>(null);
@@ -410,7 +426,19 @@ function CatalogScreen() {
   const [nextTracks, setNextTracks] = useState<Track[]>([]);
   const playback = useRef<PlaybackProgress>();
   const playContext = useRef('Слушать');
-  const volumeBarContainerRef = useRef<any>(null);
+  const volumeBarContainerRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const slider = volumeBarContainerRef.current;
+    if (Platform.OS !== 'web' || !slider?.addEventListener) return;
+    const adjust = (event: WheelEvent) => {
+      if (!event.deltaY || event.ctrlKey) return;
+      event.preventDefault();
+      setVolume(value => Math.max(0, Math.min(1, Math.round((value - Math.sign(event.deltaY) * 0.05) * 100) / 100)));
+    };
+    slider.addEventListener('wheel', adjust, { passive: false });
+    return () => slider.removeEventListener('wheel', adjust);
+  }, [compact]);
+
   const searchAbortRef = useRef<AbortController | null>(null);
 
 
@@ -825,34 +853,6 @@ function CatalogScreen() {
       if (audio === webAudioRef.current && Number.isFinite(audio.duration)) audio.currentTime = target;
     }, 85);
   };
-
-  const updateVolumePosition = (clientX: number) => {
-    if (!volumeBarContainerRef.current) return;
-    let rect: any = null;
-    if (volumeBarContainerRef.current.getBoundingClientRect) rect = volumeBarContainerRef.current.getBoundingClientRect();
-    if (!rect || !rect.width) return;
-    const offsetX = Math.max(0, Math.min(clientX - rect.left, rect.width));
-    const newVol = Math.max(0, Math.min(1, offsetX / rect.width));
-    setVolume(newVol);
-  };
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    const handleMove = (e: MouseEvent) => {
-      if (isDraggingVolume) updateVolumePosition(e.clientX);
-    };
-    const handleUp = () => {
-      if (isDraggingVolume) setIsDraggingVolume(false);
-    };
-    if (isDraggingVolume) {
-      window.addEventListener('mousemove', handleMove);
-      window.addEventListener('mouseup', handleUp);
-    }
-    return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-  }, [isDraggingVolume, trackDuration, m?.currentTrack?.duration]);
 
   const stopAudio = () => {
     cancelTransition();
@@ -1338,9 +1338,9 @@ function CatalogScreen() {
           <Text style={{ fontSize: 10, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12, paddingLeft: 4 }}>Медиатека</Text>
           <View style={{ gap: 6, flexDirection: compact ? 'row' : 'column', flexWrap: 'wrap' }}>
             {[
+              ...(authUser ? [{ id: 'my_music', label: 'Моя музыка' }] : []),
               { id: 'main', label: 'Слушать' },
-              ...(authUser ? [{ id: 'uploads', label: 'Загруженные' },
-              { id: 'my_music', label: 'Моя музыка' }, { id: 'downloads', label: 'Скачанные' }] : []),
+              ...(authUser ? [{ id: 'uploads', label: 'Загруженные' }] : []),
             ].map((tab: any) => {
               const isActive = activeTab === tab.id;
               return (
@@ -1374,12 +1374,12 @@ function CatalogScreen() {
           </Pressable> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <Text style={{ fontSize: compact ? 21 : 32, fontWeight: '800', color: '#000000', flexShrink: 1 }}>
-              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : activeTab === 'downloads' ? 'Скачанные' : 'Моя музыка'}
+              {activeTab === 'main' ? 'Слушать' : activeTab === 'uploads' ? 'Загруженные треки' : 'Моя музыка'}
             </Text>
 
             {activeTab === 'uploads' && (
               <Pressable 
-                onPress={() => router.push('/upload')} 
+                onPress={() => setShowUploadPanel(true)}
                 style={{ 
                   backgroundColor: '#fa233b', 
                   paddingHorizontal: 18, 
@@ -1459,17 +1459,12 @@ function CatalogScreen() {
             <Text>Доступно обновление. Если играет музыка, сайт обновится после трека.</Text>
             <PrimaryButton variant="soft" title="Обновить сейчас" onPress={() => window.location.reload()} />
           </View>}
-          {authUser && activeTab === 'downloads' && <RememberedScroll position={listPositions.current.downloads} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
-            {offlineList.length ? <>
-              <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
-              <PrimaryButton title="Очистить скачанные" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные треки.'))} />
-            </> : <Text>Здесь появятся треки, которые ты сохранишь кнопкой «Скачать» в карточке «О треке».</Text>}
-          </RememberedScroll>}
           {activeTab === 'main' && (
             <RememberedScroll position={listPositions.current.main} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {offline && !authUser && offlineList.length > 0 && <View style={{ gap: 8 }}>
+              {offline && offlineList.length > 0 && <View style={{ gap: 8 }}>
                 <Text style={{ fontWeight: '800' }}>Скачано на этом устройстве</Text>
                 <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
+                {authUser && <PrimaryButton title="Очистить скачанные" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные треки.'))} />}
               </View>}
 
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
@@ -1594,9 +1589,10 @@ function CatalogScreen() {
                       <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
-                        <Text numberOfLines={1} style={{ fontSize: 11, color: '#686871' }}>{[item.artist, item.album,
-                          (item.version_kind || trackVersion(item.title) !== 'original') ? TRACK_VERSIONS[trackVersion(item.title, item.version_kind)] : '',
-                          item.id.startsWith('audius_') ? 'Audius' : 'Ритм'].filter(Boolean).join(' · ')}</Text>
+                        <TrackByline track={item} extras={[
+                          item.version_kind || trackVersion(item.title) !== 'original' ? TRACK_VERSIONS[trackVersion(item.title, item.version_kind)] : '',
+                          item.id.startsWith('audius_') ? 'Audius' : 'Ритм',
+                        ]} />
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
@@ -1646,6 +1642,7 @@ function CatalogScreen() {
                       <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
+                        <TrackByline track={item} />
                         <View style={{ backgroundColor: 'rgba(250, 35, 59, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
                           <Text style={{ fontSize: 10, fontWeight: '700', color: '#fa233b' }}>{item.genre || 'Deep'}</Text>
                         </View>
@@ -1711,9 +1708,12 @@ function CatalogScreen() {
                     key={pl.id}
                     onPress={() => setSelectedPlaylistModal(pl)}
                     style={({ pressed }) => ({ 
-                      width: 140, 
-                      height: 170,
-                      backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                      width: 182,
+                      height: 221,
+                      backgroundColor: 'rgba(20, 20, 26, 0.54)',
+                      backdropFilter: 'blur(24px) saturate(145%)' as any,
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.24)',
                       borderRadius: 18, 
                       padding: 12, 
                       marginRight: 14,
@@ -1726,11 +1726,11 @@ function CatalogScreen() {
                       outlineStyle: 'none' as any
                     })}
                   >
-                    <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
-                      {pl.cover ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
+                    <View style={{ width: '100%', height: 130, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.11)', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
+                      {pl.cover ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 42 }}>📚</Text>}
                     </View>
-                    <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
-                    <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#fff' }}>{pl.title}</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 11, color: '#f0f0f4', marginTop: 2 }}>{pl.tracks.length} треков</Text>
                   </Pressable>
                 ))}
               </ScrollView>
@@ -1760,6 +1760,7 @@ function CatalogScreen() {
                         <TrackCoverImage track={item} style={trackArtwork} />
                         <View style={{ flex: 1 }}>
                           <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
+                        <TrackByline track={item} />
                         </View>
                       </Pressable>
                       <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
@@ -1774,6 +1775,23 @@ function CatalogScreen() {
           )}
         </View>
       </View>
+
+      {showUploadPanel && authUser && <View accessibilityLabel="Загрузка аудио"
+        style={{ position: 'absolute', top: compact ? 10 : 24, right: compact ? 10 : 26, bottom: compact ? 152 : 122,
+          width: compact ? 'calc(100% - 20px)' as any : 480, maxHeight: 630, zIndex: 98, borderRadius: 22,
+          backgroundColor: '#f6f6f9', borderWidth: 1, borderColor: '#dedee6', boxShadow: '0 12px 36px rgba(0,0,0,0.22)' as any }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10 }}>
+          <Text accessibilityRole="header" style={{ fontSize: 20, fontWeight: '800' }}>Загрузка аудио</Text>
+          <PrimaryButton title="Закрыть" variant="soft" onPress={() => setShowUploadPanel(false)} />
+        </View>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, gap: 10 }}>
+          <UploadForm userId={authUser.id} onPublished={() => {
+            void loadCloudTracks();
+            searchCatalog.current = undefined;
+            setCatalogRevision(value => value + 1);
+          }} />
+        </ScrollView>
+      </View>}
 
       {/* НИЖНИЙ ПЛЕЕР */}
       <View style={{
@@ -1922,12 +1940,10 @@ function CatalogScreen() {
           <Pressable onPress={handleMuteToggle} style={{ padding: 4, outlineStyle: 'none' as any }}>
             <WebIcon name={volume === 0 ? "volume-mute" : "volume-low"} size={18} color="#ffffff" />
           </Pressable>
-          <Pressable ref={volumeBarContainerRef} onPressIn={(e) => { setIsDraggingVolume(true); updateVolumePosition(e.nativeEvent.pageX); }} style={{ width: 80, height: 20, justifyContent: 'center', cursor: 'pointer', outlineStyle: 'none' as any }}>
-            {/* @ts-ignore */}
-            <View pointerEvents="none" style={{ width: '100%', height: 4, backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: 2 }}>
-              <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
-            </View>
-          </Pressable>
+          {Platform.OS === 'web' && <input ref={volumeBarContainerRef} aria-label="Громкость" type="range"
+            min={0} max={100} step={1} value={Math.round(volume * 100)} onChange={event => setVolume(Number(event.currentTarget.value) / 100)}
+            style={{ width: 80, height: 20, margin: 0, accentColor: '#fa233b', cursor: 'pointer' }} />}
+
           <Pressable accessibilityRole="button" accessibilityLabel="Открыть эквалайзер"
             onPress={() => setShowEqualizerModal(true)}
             style={{ 
