@@ -6,12 +6,13 @@ import { supabase } from '../lib/supabase';
 import type { Track } from '../lib/music-data';
 
 type Artist = { username: string; avatar_url: string | null; bio: string };
-export function ArtistPanel({ id, viewer, close, mapTrack, play, signIn }: {
-  id: string; viewer?: string; close: () => void; mapTrack: (row: unknown) => Track;
+export function ArtistPanel({ id, viewer, summaryOnly, close, mapTrack, play, signIn }: {
+  id: string; viewer?: string; summaryOnly?: boolean; close: () => void; mapTrack: (row: unknown) => Track;
   play: (track: Track, queue: Track[]) => void; signIn: () => void;
 }) {
   const [artist, setArtist] = useState<Artist>();
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [uploads, setUploads] = useState(0);
   const [followers, setFollowers] = useState(0);
   const [following, setFollowing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -23,7 +24,9 @@ export function ArtistPanel({ id, viewer, close, mapTrack, play, signIn }: {
     let active = true;
     void Promise.all([
       db.from('profiles').select('username,avatar_url,bio').eq('id', id).maybeSingle(),
-      db.from('tracks').select('*').eq('user_id', id).order('published_at', { ascending: false, nullsFirst: false }),
+      summaryOnly
+        ? db.from('tracks').select('*', { count: 'exact', head: true }).eq('user_id', id).not('audio_url', 'is', null).neq('audio_url', '')
+        : db.from('tracks').select('*').eq('user_id', id).not('audio_url', 'is', null).neq('audio_url', '').order('published_at', { ascending: false, nullsFirst: false }),
       db.rpc('ritm_follower_count', { artist_id: id }),
       viewer ? db.from('ritm_follows').select('artist').eq('follower', viewer).eq('artist', id).maybeSingle() : null,
       db.from('ritm_hidden_tracks').select('track_id'),
@@ -35,12 +38,13 @@ export function ArtistPanel({ id, viewer, close, mapTrack, play, signIn }: {
       }
       setArtist(profile.data);
       const hidden = new Set((visibility.data ?? []).map(item => item.track_id));
+      setUploads(songs.count ?? 0);
       setTracks((songs.data || []).filter(song => !hidden.has(song.id)).map(mapTrack));
       setFollowers(Number(count.data) || 0);
       setFollowing(Boolean(follow?.data));
     });
     return () => { active = false; };
-  }, [id, viewer, mapTrack]);
+  }, [id, viewer, mapTrack, summaryOnly]);
 
   async function toggle() {
     if (!viewer) { signIn(); return; }
@@ -65,10 +69,11 @@ export function ArtistPanel({ id, viewer, close, mapTrack, play, signIn }: {
       <AvatarCircle name={artist.username} uri={artist.avatar_url} size={72} />
       {artist.bio ? <Text>{artist.bio}</Text> : null}
       <Text>Подписчики · {followers}</Text>
-      {typeof window !== 'undefined' && <Text selectable>{new URL('?artist=' + id, window.location.href).href}</Text>}
       {viewer !== id && <PrimaryButton title={following ? 'Отписаться' : 'Подписаться'} loading={busy} onPress={() => void toggle()} />}
+      {summaryOnly ? <Text>Загружено треков · {uploads}</Text> : <>
       <Text style={{ fontWeight: '800' }}>Треки автора</Text>
       {tracks.length ? <TrackList tracks={tracks} play={track => play(track, tracks)} /> : <Text>Пока нет опубликованных треков.</Text>}
+      </>}
     </>}
   </CollectionPanel>;
 }

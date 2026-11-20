@@ -1,3 +1,4 @@
+import { readableTrackText } from '../../lib/track-text';
 import { DragRow, moved } from '../../components/DragRow';
 import { UploadForm } from '../../components/UploadForm';
 import { RememberedScroll } from '../../components/RememberedScroll';
@@ -80,15 +81,6 @@ const GENRE_ALIASES: Record<string, string[]> = {
   'Drum & Bass': ['Drum and Bass', 'DnB'],
 };
 
-function readableGenre(raw: string) {
-  const value = raw.trim();
-  const swapped = Array.from(value, char => {
-    const code = char.charCodeAt(0);
-    return String.fromCharCode(((code & 255) << 8) | (code >> 8));
-  }).join('');
-  return /^[A-Za-zА-Яа-яЁё0-9 &/.-]+$/.test(swapped) && /[A-Za-zА-Яа-яЁё]/.test(swapped) ? swapped : value;
-}
-
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop';
 
 const AUDIUS_HOSTS = [
@@ -159,12 +151,12 @@ function mapCloudTrack(item: any): Track {
 
   return {
     id: String(item.id),
-    title: item.title || 'Без названия',
+    title: readableTrackText(item.title || '') || 'Без названия',
     music: item.music,
-    artist: item.artist || '',
-    album: item.album,
+    artist: readableTrackText(item.artist || ''),
+    album: item.album ? readableTrackText(item.album) : item.album,
     version_kind: item.version_kind,
-    genre: readableGenre(item.genre || ''),
+    genre: readableTrackText(item.genre || ''),
     duration: dur,
     url: item.audio_url || item.url || (/^audius_[A-Za-z0-9]{1,32}$/.test(item.id) ? 'https://api.audius.co/v1/tracks/' + item.id.slice(7) + '/stream?app_name=RITM_APP' : ''),
     cover_url: resolvedCover,
@@ -208,7 +200,7 @@ function TrackCoverImage({ track, style, override }: { track: Track | null; styl
 }
 
 function mapAudiusTrack(item: any, host: string): Track {
-  return { id: 'audius_' + item.id, title: item.title, artist: item.user?.name, genre: readableGenre(item.genre || ''),
+  return { id: 'audius_' + item.id, title: item.title, artist: item.user?.name, genre: readableTrackText(item.genre || ''),
     music: { bpm: Number(item.bpm) || undefined, key: item.musical_key || undefined },
     duration: item.duration || 180, fileDuration: Number(item.duration) || undefined, url: host + '/v1/tracks/' + item.id + '/stream?app_name=RITM_APP',
     raw_id: item.id, small_cover_url: item.artwork?.['150x150'], cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'],
@@ -257,6 +249,7 @@ function CatalogScreen() {
   const openingArtist = useRef(0);
   const compact = useWindowDimensions().width < 780;
   const [playlistEdit, setPlaylistEdit] = useState<UserPlaylist | null>(null);
+  const [playlistAuthorOnly, setPlaylistAuthorOnly] = useState(false);
   const [artistId, setArtistId] = useState<string | null>(null);
   const [reportTrack, setReportTrack] = useState<Track | null>(null);
   const [reason, setReason] = useState('');
@@ -573,7 +566,7 @@ function CatalogScreen() {
       const match = '%' + term.replace(/[\\%_*]/g, char => '\\' + char) + '%';
       const localCatalog = async () => {
         const cached = searchCatalog.current;
-        if (cached && cached.expires > Date.now()) return cached.tracks;
+        if (term.length < 2 && cached && cached.expires > Date.now()) return cached.tracks;
         const tracks: Track[] = [];
         const pageSize = 250;
         for (let from = 0; ; from += pageSize) {
@@ -655,7 +648,7 @@ function CatalogScreen() {
       const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !omitted.has(t.id));
       const ranked = term.length >= 2 ? filtered.map(track => ({ track, score: score(track) }))
         .filter(item => item.score > 0 || localMatches.has(item.track.id))
-        .sort((a, b) => b.score - a.score).map(item => item.track) : filtered;
+        .sort((a, b) => Number(localMatches.has(b.track.id)) - Number(localMatches.has(a.track.id)) || b.score - a.score).map(item => item.track) : filtered;
       setGlobalSearchResults(ranked);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
@@ -1570,7 +1563,7 @@ function CatalogScreen() {
                   placeholder="Поиск треков и исполнителей..."
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
-                  onChangeText={setSearchQuery}
+                  onChangeText={value => { if (!searchQuery.trim() && value.trim()) { setSelectedGenre('Все жанры'); setVersionFilter(null); } setSearchQuery(value); }}
                   returnKeyType="search"
                   maxLength={150}
                   style={{ flex: 1, fontSize: 15, color: '#000000', outlineStyle: 'none' as any }}
@@ -2159,7 +2152,7 @@ function CatalogScreen() {
                   </Text>
 
 
-                  <Pressable onPress={() => { const id = selectedPlaylistModal.author_id || authUser?.id; if (id) { setSelectedPlaylistModal(null); setArtistId(id); } }}><Text style={{ color: '#626973', marginBottom: 12 }}>Автор · {playlistAuthor || 'Открыть профиль'}</Text></Pressable>
+                  <Pressable onPress={() => { const id = selectedPlaylistModal.author_id || authUser?.id; if (id) { setSelectedPlaylistModal(null); setPlaylistAuthorOnly(true); setArtistId(id); } }}><Text style={{ color: '#626973', marginBottom: 12 }}>Автор · {playlistAuthor || 'Открыть профиль'}</Text></Pressable>
                   {!!selectedPlaylistModal.description && <Text style={{ color: '#727d89', marginBottom: 10 }}>{selectedPlaylistModal.description}</Text>}
                   {selectedPlaylistModal.id && userPlaylists.some(item => item.id === selectedPlaylistModal.id) && <Pressable onPress={() => void sharePlaylist(selectedPlaylistModal.id!)}><Text style={{ color: '#626973', marginBottom: 12 }}>↗ Поделиться</Text></Pressable>}
                   {selectedPlaylistModal.tracks.length > 0 && (
@@ -2487,8 +2480,8 @@ function CatalogScreen() {
           setSelectedPlaylistModal(null);
           setNotice('Плейлист удалён.');
         }} />}
-      {artistId && <ArtistPanel id={artistId} viewer={authUser?.id} mapTrack={mapCloudTrack} close={() => setArtistId(null)} signIn={() => {
-        setArtistId(null); router.push('/sign-in');
+      {artistId && <ArtistPanel id={artistId} viewer={authUser?.id} summaryOnly={playlistAuthorOnly} mapTrack={mapCloudTrack} close={() => { setArtistId(null); setPlaylistAuthorOnly(false); }} signIn={() => {
+        setArtistId(null); setPlaylistAuthorOnly(false); router.push('/sign-in');
       }} play={(track, queue) => { setArtistId(null); void safePlayTrack(track, queue, 'Автор'); }} />}
       {shared && <CollectionPanel title={shared.title} close={() => setShared(null)}>
         {shared.cover && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}

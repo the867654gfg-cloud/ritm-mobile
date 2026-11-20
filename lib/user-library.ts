@@ -1,3 +1,4 @@
+import { readableTrackText } from './track-text';
 import type { Track } from './music-data';
 import { supabase } from './supabase';
 
@@ -12,7 +13,8 @@ type LibrarySnapshot = {
 const asTrack = (value: unknown): Track | null => {
   if (!value || typeof value !== 'object') return null;
   const track = value as Track;
-  return typeof track.id === 'string' && typeof track.title === 'string' ? track : null;
+  return typeof track.id === 'string' && typeof track.title === 'string' ? { ...track, title: readableTrackText(track.title), artist: track.artist && readableTrackText(track.artist),
+      album: track.album && readableTrackText(track.album), genre: readableTrackText(track.genre || '') } : null;
 };
 
 /** Загружает личную медиатеку. Треки хранятся снимком, поэтому в ней работают и Audius, и свои загрузки. */

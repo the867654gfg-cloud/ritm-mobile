@@ -1,3 +1,4 @@
+import { readableTrackText } from './track-text';
 import { splitTrackTitle } from './catalog-search';
 import { getWebFileContentType } from './track-cover';
 
@@ -16,10 +17,10 @@ export async function audioTags(file: Blob, filename: string) {
       try { await getWebFileContentType(blob); cover = blob; break; } catch {}
     }
     return {
-      title: (common.title?.trim() || fallback.title || 'Без названия').slice(0, 150),
-      artist: (common.artist?.trim() || fallback.artist).slice(0, 100),
-      album: (common.album?.trim() || '').slice(0, 150),
-      genre: (common.genre?.find(genre => genre.trim())?.trim() || '').slice(0, 80),
+      title: (readableTrackText(common.title ?? '') || fallback.title || 'Без названия').slice(0, 150),
+      artist: (readableTrackText(common.artist ?? '') || fallback.artist).slice(0, 100),
+      album: (readableTrackText(common.album ?? '') || '').slice(0, 150),
+      genre: (readableTrackText(common.genre?.find(genre => genre.trim()) ?? '') || '').slice(0, 80),
       duration: Number.isFinite(format.duration) ? Math.round(format.duration!) : 0,
       cover,
     };
