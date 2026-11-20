@@ -18,6 +18,8 @@ function Chip({ text, selected, onPress }: { text: string; selected?: boolean; o
 type CustomPreset = { name: string; gains: number[] };
 type Props = {
   close: () => void;
+  saveData: boolean;
+  setSaveData: (enabled: boolean) => void;
   normalization: boolean;
   setNormalization: (enabled: boolean) => void;
   crossfade: number;
@@ -25,7 +27,7 @@ type Props = {
   keyboardHelp?: () => void;
 };
 
-export function EqualizerPanel({ close, normalization, setNormalization, crossfade, setCrossfade, keyboardHelp }: Props) {
+export function EqualizerPanel({ close, saveData, setSaveData, normalization, setNormalization, crossfade, setCrossfade, keyboardHelp }: Props) {
   const music = useMusic();
   const narrow = useWindowDimensions().width < 630;
   const preset = Object.entries(EQ_PRESETS).find(([, gains]) => gains.every((gain, i) => gain === music.eqGains[i]))?.[0];
@@ -120,6 +122,11 @@ export function EqualizerPanel({ close, normalization, setNormalization, crossfa
             <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800' }}>Ровная громкость</Text>
             <Text style={{ color: '#fff', fontWeight: '700', borderRadius: 14, overflow: 'hidden', paddingHorizontal: 10, paddingVertical: 5,
               backgroundColor: normalization ? '#b02137' : '#ffffff21' }}>{normalization ? 'Вкл.' : 'Выкл.'}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="switch" aria-checked={saveData} onPress={() => setSaveData(!saveData)}
+            style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 }}>
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800' }}>Экономия интернета</Text>
+            <Text style={{ color: '#fff', fontWeight: '700' }}>{saveData ? 'Вкл.' : 'Выкл.'}</Text>
           </Pressable>
           <Text style={{ color: '#eeeef2', fontSize: 13 }}>Плавный переход между треками</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>

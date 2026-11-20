@@ -6,7 +6,7 @@ import { Field, Notice, PrimaryButton } from './AuthUI';
 type Daily = { track_id: string; day: string; source: string; plays: number; listens: number };
 type Song = { id: string; title: string };
 const sourceNames: Record<string, string> = {
-  artist: 'Страница автора', shared: 'Общий плейлист', catalog: 'Каталог', library: 'Медиатека', playlist: 'Подборки и очередь', other: 'Другие разделы',
+  artist: 'Страница автора', shared: 'Общий плейлист', catalog: 'Каталог', library: 'Медиатека', playlist: 'Подборки', other: 'Другие разделы',
 };
 
 export function CreatorStats({ userId }: { userId: string }) {

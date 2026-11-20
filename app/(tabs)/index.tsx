@@ -12,6 +12,7 @@ import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
 import { searchScore, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
 import { BatchTrackEditor, type TrackMetadata } from '../../components/BatchTrackEditor';
 import { EqualizerPanel } from '../../components/EqualizerPanel';
+import { TrackQuality } from '../../components/TrackQuality';
 import { FullPlayer } from '../../components/FullPlayer';
 import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
@@ -107,7 +108,8 @@ function formatDate(value?: string): string {
 }
 
 const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
-type TrackCards = Record<string, { path: string; cover?: string | null }>;
+const SaveDataContext = createContext(false);
+type TrackCards = Record<string, { path: string; thumbnail?: string; cover?: string | null; quality?: { format: string; kbps: number } }>;
 type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
 const TrackCardsContext = createContext<TrackCards>({});
 const trackRow = {
@@ -145,6 +147,8 @@ function mapCloudTrack(item: any): Track {
     url: item.audio_url || item.url || (/^audius_[A-Za-z0-9]{1,32}$/.test(item.id) ? 'https://api.audius.co/v1/tracks/' + item.id.slice(7) + '/stream?app_name=RITM_APP' : ''),
     cover_url: resolvedCover,
     cover_key: item.cover_key,
+    small_cover_url: item.small_cover_url,
+    fileDuration: item.fileDuration ?? (Number(item.duration) > 0 ? Number(item.duration) : undefined),
     created_at: item.created_at || item.release_date || item.createdAt,
     published_at: item.published_at || item.release_date,
     user_id: item.user_id,
@@ -154,11 +158,14 @@ function mapCloudTrack(item: any): Track {
 
 function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
   const cards = useContext(TrackCardsContext);
+  const saveData = useContext(SaveDataContext);
   const [failedUri, setFailedUri] = useState('');
   const original = track?.cover_url || track?.cover_key || '';
   const repair = track && cards[track.id]?.cover;
   // User replacements use a new owner-scoped URL and should win over the last build's repair.
-  const coverUri = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
+  const regularCover = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
+  const thumbnail = track && cards[track.id]?.thumbnail;
+  const coverUri = saveData ? thumbnail || track?.small_cover_url || '' : regularCover;
   return <View style={[style, { overflow: 'hidden', backgroundColor: '#e5e5ea', justifyContent: 'center', alignItems: 'center' }]}>
     {coverUri && failedUri !== coverUri
       ? <Image source={{ uri: coverUri }} style={{ width: '100%', height: '100%' }} resizeMode="contain" onError={() => setFailedUri(coverUri)} />
@@ -168,8 +175,8 @@ function TrackCoverImage({ track, style }: { track: Track | null; style: any }) 
 
 function mapAudiusTrack(item: any, host: string): Track {
   return { id: 'audius_' + item.id, title: item.title, artist: item.user?.name, genre: item.genre || '',
-    duration: item.duration || 180, url: host + '/v1/tracks/' + item.id + '/stream?app_name=RITM_APP',
-    raw_id: item.id, cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'],
+    duration: item.duration || 180, fileDuration: Number(item.duration) || undefined, url: host + '/v1/tracks/' + item.id + '/stream?app_name=RITM_APP',
+    raw_id: item.id, small_cover_url: item.artwork?.['150x150'], cover_url: item.artwork?.['480x480'] || item.artwork?.['150x150'],
     published_at: item.release_date, description: item.description };
 }
 
@@ -209,7 +216,12 @@ function CatalogScreen() {
   const [batchTracks, setBatchTracks] = useState<Track[] | null>(null);
   const [canModerate, setCanModerate] = useState(false);
   const [showModeration, setShowModeration] = useState(false);
-  const [showQueue, setShowQueue] = useState(false);
+  const [saveData, setSaveData] = useState(() => {
+    try { return localStorage.getItem('ritm_save_data') === 'true'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('ritm_save_data', String(saveData)); } catch {}
+  }, [saveData]);
   const [trackLink, setTrackLink] = useState('');
   const [authorResults, setAuthorResults] = useState<{ id: string; username: string }[]>([]);
   const [audiusAuthors, setAudiusAuthors] = useState<{ id: string; name: string }[]>([]);
@@ -352,15 +364,10 @@ function CatalogScreen() {
   const playRequest = useRef(0);
   const playingRequest = useRef(0);
   const queuedNext = useRef<Track[]>([]);
-  const queuePriority = useRef<string | undefined>();
   const previousTracks = useRef<Track[]>([]);
   const [nextTracks, setNextTracks] = useState<Track[]>([]);
   const playback = useRef<PlaybackProgress>();
   const playContext = useRef('Слушать');
-  const scopedKey = 'ritm_resume_' + (authUser?.id ?? 'guest');
-  const [resumePoint, setResumePoint] = useState<{ track: Track; seconds: number } | null>(() => {
-    try { return JSON.parse(localStorage.getItem(scopedKey) || 'null'); } catch { return null; }
-  });
   const seekBarContainerRef = useRef<any>(null);
   const volumeBarContainerRef = useRef<any>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -631,7 +638,7 @@ function CatalogScreen() {
   useEffect(() => {
     try { localStorage.setItem('ritm_crossfade_seconds', String(crossfade)); } catch {}
     cancelTransition();
-  }, [crossfade, m.playbackSpeed]);
+  }, [crossfade, m.playbackSpeed, saveData]);
 
   useEffect(() => { cancelTransition(false); }, [isShuffle, isRepeat, nextTracks]);
 
@@ -737,7 +744,7 @@ function CatalogScreen() {
         audio.removeEventListener('playing', resetClock);
       };
     }
-  }, [activeAudio, isDraggingSeek, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume]);
+  }, [activeAudio, isDraggingSeek, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume, saveData]);
 
   const seekTo = (seconds: number) => {
     const audio = webAudioRef.current;
@@ -821,9 +828,8 @@ function CatalogScreen() {
     playback.current = undefined;
     if (!fromQueue) {
       const list = queueList ?? globalSearchResults;
-      const priority = queuedNext.current.find(item => item.id === queuePriority.current && item.id !== track.id);
       const start = list.findIndex(item => item.id === track.id);
-      setUpcoming([...(priority ? [priority] : []), ...list.slice(start + 1).filter(item => item.id !== track.id && item.id !== priority?.id)]);
+      setUpcoming(list.slice(start + 1).filter(item => item.id !== track.id));
     }
 
     let playableTrack = track;
@@ -883,13 +889,11 @@ function CatalogScreen() {
 
   function nextIndex() {
     const items = queuedNext.current;
-    const priority = items.findIndex(item => item.id === queuePriority.current);
-    return priority >= 0 ? priority : isShuffle ? Math.floor(Math.random() * items.length) : 0;
+    return isShuffle ? Math.floor(Math.random() * items.length) : 0;
   }
 
   function takeFromQueue(index: number) {
     const items = queuedNext.current;
-    queuePriority.current = undefined;
     setUpcoming(items.filter((_, i) => i !== index));
     return items[index];
   }
@@ -898,7 +902,7 @@ function CatalogScreen() {
     if (!crossfade || isRepeat || fadingTrack.current || !mixer.current || !spareAudio.current ||
       outgoing.paused || outgoing.seeking || playingRequest.current !== playRequest.current) return;
     const remaining = (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate;
-    if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + 10) return;
+    if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + (saveData ? 0 : 10)) return;
     let prepared = preparedTransition.current;
     if (!prepared) {
       const track = queuedNext.current[nextIndex()];
@@ -967,15 +971,6 @@ function CatalogScreen() {
     const current = m.currentTrack as Track | null;
     if (current) setUpcoming([current, ...queuedNext.current.filter(item => item.id !== current.id)]);
     void safePlayTrack(track, undefined, playContext.current, 0, true, true);
-  };
-
-  const playNext = (track: Track) => {
-    cancelTransition(false);
-    queuePriority.current = track.id;
-    setUpcoming([track, ...queuedNext.current.filter(item => item.id !== track.id)]);
-    setSelectedTrackMenu(null);
-    setSelectedTrackDetails(null);
-    setNotice('Следующим будет «' + track.title + '».');
   };
 
   const handleTogglePlay = async () => {
@@ -1179,14 +1174,6 @@ function CatalogScreen() {
 
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
   const progressPercent = activeDuration > 0 ? Math.min(100, Math.max(0, (currentTime / activeDuration) * 100)) : 0;
-  const resumeInterval = Math.floor(currentTime / 5);
-  useEffect(() => {
-    if (Platform.OS !== 'web' || !m.currentTrack || resumeInterval < 1) return;
-    try {
-      localStorage.setItem(scopedKey, JSON.stringify({ track: m.currentTrack, seconds: resumeInterval * 5 }));
-    } catch {}
-  }, [m.currentTrack?.id, resumeInterval, scopedKey]);
-
   const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition });
   mediaActions.current = { next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition };
   useEffect(() => {
@@ -1202,7 +1189,7 @@ function CatalogScreen() {
       if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')) return;
-      if (showKeyboardHelp || showEqualizerModal || showQueue || (!showFullPlayer && document.querySelector('[aria-modal="true"],[role="dialog"]'))) return;
+      if (showKeyboardHelp || showEqualizerModal || (!showFullPlayer && document.querySelector('[aria-modal="true"],[role="dialog"]'))) return;
 
       const key = event.key;
       if (!event.shiftKey && key === '/' && !showFullPlayer) {
@@ -1226,13 +1213,14 @@ function CatalogScreen() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [compact, activeTab, showFullPlayer, showKeyboardHelp, showEqualizerModal, showQueue]);
+  }, [compact, activeTab, showFullPlayer, showKeyboardHelp, showEqualizerModal]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || !('mediaSession' in navigator) || !m.currentTrack) return;
     const media = navigator.mediaSession;
     const track: Track = m.currentTrack;
-    media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: track.cover_url ? [{ src: track.cover_url }] : [] });
+    const artwork = saveData ? trackCards[track.id]?.thumbnail || track.small_cover_url : track.cover_url;
+    media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: artwork ? [{ src: artwork }] : [] });
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
       play: () => { void webAudioRef.current?.play().then(m.resumeTrack).catch(() => {}); },
       pause: () => { mediaActions.current.cancelTransition(); webAudioRef.current?.pause(); void m.pauseTrack(); },
@@ -1249,7 +1237,7 @@ function CatalogScreen() {
         try { media.setActionHandler(action as MediaSessionAction, null); } catch {}
       }
     };
-  }, [m.currentTrack?.id]);
+  }, [m.currentTrack?.id, saveData, trackCards]);
   useEffect(() => {
     if (Platform.OS === 'web' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
@@ -1257,7 +1245,7 @@ function CatalogScreen() {
   }, [m.currentTrack?.id, m.isPlaying]);
 
   return (
-    <TrackCardsContext.Provider value={trackCards}>
+    <SaveDataContext.Provider value={saveData}><TrackCardsContext.Provider value={trackCards}>
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
       <View style={{ flex: 1, flexDirection: compact ? 'column' : 'row', overflow: 'hidden' }}>
         
@@ -1432,7 +1420,6 @@ function CatalogScreen() {
           {/* ВКЛАДКА 1: СЛУШАТЬ */}
           {activeTab === 'main' && (
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {resumePoint && !m.currentTrack && <PrimaryButton variant="soft" title={'Продолжить · ' + resumePoint.track.title + ' · ' + formatTime(resumePoint.seconds)} onPress={() => void safePlayTrack(resumePoint.track, [resumePoint.track], 'Моя музыка', resumePoint.seconds)} />}
               {offlineList.length > 0 && <View style={{ gap: 6, marginBottom: 14 }}>
                 <Text style={{ fontWeight: '800' }}>Офлайн на этом устройстве</Text>
                 <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList)} />
@@ -1510,7 +1497,7 @@ function CatalogScreen() {
                       })}
                     >
                       <View style={{ width: '100%', height: 126, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 10, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
-                        {sp.cover_url ? <Image source={{ uri: sp.cover_url }} style={{ width: '100%', height: '100%' }} /> : <Text style={{ fontSize: 32 }}>🎵</Text>}
+                        {sp.tracks[0] ? <TrackCoverImage track={sp.tracks[0]} style={{ width: '100%', height: '100%' }} /> : <Text style={{ fontSize: 32 }}>🎵</Text>}
                       </View>
                       <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{sp.title}</Text>
                       <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{sp.tracks.length} треков</Text>
@@ -1692,7 +1679,7 @@ function CatalogScreen() {
                     })}
                   >
                     <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
-                      {pl.cover ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
+                      {saveData && pl.tracks[0] ? <TrackCoverImage track={pl.tracks[0]} style={{ width: '100%', height: '100%' }} /> : pl.cover && !saveData ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
                     </View>
                     <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
                     <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
@@ -1931,14 +1918,9 @@ function CatalogScreen() {
       </View>
 
       {compact && <Pressable accessibilityRole="button" accessibilityLabel="Открыть эквалайзер" onPress={() => setShowEqualizerModal(true)}
-        style={{ position: 'absolute', zIndex: 110, right: 103, bottom: 147, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 11, paddingVertical: 7 }}>
+        style={{ position: 'absolute', zIndex: 110, right: 14, bottom: 147, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 11, paddingVertical: 7 }}>
         <Text style={{ fontWeight: '800', color: '#292930' }}>EQ</Text>
       </Pressable>}
-      <Pressable accessibilityRole="button" accessibilityLabel="Очередь воспроизведения" onPress={() => setShowQueue(true)}
-        style={{ position: 'absolute', zIndex: 110, right: compact ? 14 : 24, bottom: compact ? 147 : 118, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 7 }}>
-        <Text style={{ fontWeight: '800', color: '#292930' }}>Далее{nextTracks.length ? ' · ' + nextTracks.length : ''}</Text>
-      </Pressable>
-
       {/* МОДАЛЬНЫЕ ОКНА */}
       <Modal animationType="fade" transparent visible={showCreatePlaylistModal}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
@@ -2019,7 +2001,7 @@ function CatalogScreen() {
                   shadowOpacity: 0.3,
                   shadowRadius: 8
                 }}>
-                  {selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url ? (
+                  {saveData ? <TrackCoverImage track={selectedPlaylistModal.tracks[0] || null} style={{ width: '100%', height: '100%' }} /> : selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url ? (
                     <Image source={{ uri: selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url || undefined }} style={{ width: '100%', height: '100%' }} />
                   ) : (
                     <Text style={{ fontSize: 42 }}>🎵</Text>
@@ -2161,11 +2143,11 @@ function CatalogScreen() {
         time={currentTime} duration={activeDuration} playing={m.isPlaying} shuffle={isShuffle} repeat={isRepeat}
         seek={seekTo} close={() => setShowFullPlayer(false)} previous={handlePrevious} next={handleNext} togglePlay={handleTogglePlay}
         toggleShuffle={() => setIsShuffle(!isShuffle)} toggleRepeat={() => setIsRepeat(!isRepeat)}
-        equalizer={() => playerPanel(() => setShowEqualizerModal(true))} queue={() => playerPanel(() => setShowQueue(true))}
+        equalizer={() => playerPanel(() => setShowEqualizerModal(true))}
         icon={(name, size, color) => <WebIcon name={name} size={size} color={color} />} />}
 
       {showEqualizerModal && <EqualizerPanel close={() => closePlayerPanel(() => setShowEqualizerModal(false))}
-        normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade}
+        saveData={saveData} setSaveData={setSaveData} normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade}
         keyboardHelp={compact ? undefined : () => { setShowEqualizerModal(false); setShowKeyboardHelp(true); }} />}
 
       {showKeyboardHelp && <CollectionPanel title="Горячие клавиши" close={() => { setShowKeyboardHelp(false); setShowEqualizerModal(true); }}>
@@ -2196,6 +2178,7 @@ function CatalogScreen() {
                 </View>
                 <View style={{ marginTop: 18, gap: 8 }}>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Исполнитель: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.artist || 'Неизвестен'}</Text></Text>
+                  <TrackQuality key={selectedTrackDetails.id} track={selectedTrackDetails} measured={trackCards[selectedTrackDetails.id]?.quality} />
                   {selectedTrackDetails.album ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Альбом: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.album}</Text></Text> : null}
                   {selectedTrackDetails.version_kind ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Версия: <Text style={{ color: '#fff', fontWeight: '700' }}>{TRACK_VERSIONS[selectedTrackDetails.version_kind]}</Text></Text> : null}
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Опубликован: <Text style={{ color: '#fff', fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
@@ -2206,7 +2189,6 @@ function CatalogScreen() {
                   <Text style={{ color: '#fff', fontWeight: '900' }}>Слушать</Text>
                 </Pressable>
                 <View style={{ gap: 8, marginTop: 12 }}>
-                  <PrimaryButton variant="soft" title="Играть следующим" onPress={() => playNext(selectedTrackDetails)} />
                   {Platform.OS === 'web' && <PrimaryButton variant="soft" title="Поделиться треком" onPress={() => {
                     const url = new URL(trackCards[selectedTrackDetails.id]?.path ?? basePath + '/?track=' + encodeURIComponent(selectedTrackDetails.id), window.location.origin);
                     setSelectedTrackDetails(null);
@@ -2280,7 +2262,6 @@ function CatalogScreen() {
                 <Text style={{ color: '#fff', fontSize: 19, width: 20, textAlign: 'center' }}>i</Text>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#fff', marginLeft: 12 }}>О треке</Text>
               </Pressable>
-              {selectedTrackIds.length < 2 && <PrimaryButton variant="soft" title="Играть следующим" onPress={() => playNext(selectedTrackMenu.track)} />}
               {selectedTrackMenu.source === 'uploads' && selectedTrackMenu.track.user_id === authUser?.id && selectedTrackIds.length < 2 &&
                 <PrimaryButton variant="soft" title="Редактировать трек" onPress={() => { setEditingTrack(selectedTrackMenu.track); setSelectedTrackMenu(null); }} />}
 
@@ -2370,26 +2351,6 @@ function CatalogScreen() {
           )}
         </View>
       </Modal>
-      {showQueue && <CollectionPanel title="Очередь «Далее»" close={() => closePlayerPanel(() => setShowQueue(false))}>
-        {!nextTracks.length && <Text>Добавь трек через «Играть следующим».</Text>}
-        {nextTracks.map((track, index) => <View key={track.id} style={{ gap: 6, paddingBottom: 8 }}>
-          <Text numberOfLines={2} style={{ fontWeight: '800' }}>{track.title}</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {[-1, 1].map(offset => <PrimaryButton key={offset} title={offset < 0 ? 'Выше' : 'Ниже'} variant="soft"
-              disabled={index + offset < 0 || index + offset >= nextTracks.length} onPress={() => {
-                const items = [...queuedNext.current];
-                [items[index], items[index + offset]] = [items[index + offset], items[index]];
-                queuePriority.current = items[0]?.id;
-                setUpcoming(items);
-              }} />)}
-            <PrimaryButton title="Убрать" variant="soft" onPress={() => {
-              const items = queuedNext.current.filter(item => item.id !== track.id);
-              if (queuePriority.current === track.id) queuePriority.current = items[0]?.id;
-              setUpcoming(items);
-            }} />
-          </View>
-        </View>)}
-      </CollectionPanel>}
       {trackLink && <CollectionPanel title="Поделиться треком" close={() => setTrackLink('')}>
         <Text selectable>{trackLink}</Text>
         <PrimaryButton title="Скопировать ссылку" onPress={() => {
@@ -2429,7 +2390,7 @@ function CatalogScreen() {
         setArtistId(null); router.push('/sign-in');
       }} play={(track, queue) => { setArtistId(null); void safePlayTrack(track, queue, 'Автор'); }} />}
       {shared && <CollectionPanel title={shared.title} close={() => setShared(null)}>
-        {shared.cover && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}
+        {shared.cover && !saveData && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}
         {shared.tracks.length ? <TrackList tracks={shared.tracks} play={track => {
           void safePlayTrack(track, shared.tracks, 'Общий плейлист'); setShared(null);
         }} /> : <Text>В плейлисте пока нет доступных треков.</Text>}
@@ -2447,6 +2408,6 @@ function CatalogScreen() {
         }} />
       </CollectionPanel>}
     </View>
-    </TrackCardsContext.Provider>
+    </TrackCardsContext.Provider></SaveDataContext.Provider>
   );
 }

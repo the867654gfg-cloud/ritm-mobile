@@ -18,7 +18,6 @@ type Props = {
   toggleShuffle: () => void;
   toggleRepeat: () => void;
   equalizer: () => void;
-  queue: () => void;
   icon: (name: string, size: number, color: string) => ReactNode;
 };
 
@@ -84,11 +83,10 @@ export function FullPlayer(props: Props) {
             {control('Повтор трека', 'repeat', props.toggleRepeat, 43, props.repeat)}
           </View>
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            {[{ title: 'Эквалайзер', action: props.equalizer }, { title: 'Очередь', action: props.queue }].map(action =>
-              <Pressable key={action.title} accessibilityRole="button" onPress={action.action}
-                style={{ paddingVertical: 12, paddingHorizontal: 18, borderRadius: 16, backgroundColor: '#ffffff13' }}>
-                <Text style={{ color: '#fff', fontWeight: '700' }}>{action.title}</Text>
-              </Pressable>)}
+            <Pressable accessibilityRole="button" onPress={props.equalizer}
+              style={{ paddingVertical: 12, paddingHorizontal: 18, borderRadius: 16, backgroundColor: '#ffffff13' }}>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>Эквалайзер</Text>
+            </Pressable>
           </View>
         </View>
       </ScrollView>

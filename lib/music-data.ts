@@ -12,6 +12,8 @@ export type Track = {
   url?: string;
   /** Ссылка на аудио из таблицы tracks */
   audio_url?: string;
+  small_cover_url?: string;
+  fileDuration?: number;
   cover_key?: string | null;
   cover_url?: string | null;
   /** id трека на Audius, нужен для запасного хоста */

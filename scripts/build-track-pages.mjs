@@ -1,5 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import sharp from 'sharp';
+import { parseBuffer } from 'music-metadata';
 
 const service = new URL(process.env.EXPO_PUBLIC_SUPABASE_URL);
 const key = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -108,24 +110,51 @@ let repaired = 0;
 async function prepare(track) {
   const cover = coverUrl(track);
   let repairedCover = '';
+  let thumbnail;
+  let artwork;
+  let quality;
+  let audioPrefix;
   let validCover = Boolean(cover && !ownStorage(cover));
   try {
-    if (ownStorage(cover)) validCover = Boolean(imageFormat(await readPrefix(cover, 5 * 1024 * 1024)));
+    if (ownStorage(cover)) {
+      artwork = await readPrefix(cover, 5 * 1024 * 1024);
+      validCover = Boolean(imageFormat(artwork));
+      if (!validCover) artwork = undefined;
+    }
     if (!validCover && track.audio_url && productAudio(track.audio_url)) {
-      const picture = id3Picture(await readPrefix(track.audio_url, 6 * 1024 * 1024));
+      audioPrefix = await readPrefix(track.audio_url, 6 * 1024 * 1024);
+      const picture = id3Picture(audioPrefix);
       if (picture) {
+        artwork = picture.picture;
         const filename = track.id + '.' + picture.extension;
         await writeFile(resolve('dist/track-covers', filename), picture.picture);
         repairedCover = new URL('track-covers/' + filename, site).pathname;
         repaired++;
       }
     }
+    if (artwork) {
+      const filename = track.id + '-small.webp';
+      await sharp(artwork).rotate().resize(150, 150, { fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 66 }).toFile(resolve('dist/track-covers', filename));
+      thumbnail = new URL('track-covers/' + filename, site).pathname;
+    }
   } catch {
     // Keep the page available when an individual audio or artwork object is unavailable.
   }
+  if (track.audio_url && productAudio(track.audio_url)) {
+    try {
+      audioPrefix ??= await readPrefix(track.audio_url, 2 * 1024 * 1024);
+      if (audioPrefix) {
+        const { format } = await parseBuffer(audioPrefix, undefined, { skipCovers: true });
+        if (format.container === 'MPEG' && format.codec?.includes('Layer 3') && format.codecProfile === 'CBR' && format.bitrate > 0) {
+          quality = { format: 'MP3', kbps: Math.round(format.bitrate / 1000) };
+        }
+      }
+    } catch { /* Some containers keep their metadata at the end of the file. */ }
+  }
   const share = new URL('t/' + track.id + '/', site);
   const image = new URL(repairedCover || (validCover && cover ? cover.href : 'ritm-icon.png'), site);
-  cards[track.id] = { path: share.pathname, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
+  cards[track.id] = { path: share.pathname, thumbnail, quality, ...(repairedCover || !validCover ? { cover: repairedCover || null } : {}) };
   const redirect = new URL('?track=' + encodeURIComponent(track.id), site);
   const title = track.title + ' · Ритм';
   const description = [track.artist, track.description].filter(Boolean).join(' · ').slice(0, 200) || 'Слушать в Ритме';
