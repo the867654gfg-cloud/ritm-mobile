@@ -65,8 +65,15 @@ function WebIcon({ name, size = 18, color = '#1c1c1e' }: { name: string; size?: 
 
 const GENRES = [
   'Все жанры', 'Deep House', 'Chillout', 'Minimal House', 'Pop', 
-  'Electronic', 'Lofi', 'Jazz', 'Rap', 'Trap', 'Techno', 'Rock'
+  'Electronic', 'Lofi', 'Jazz', 'Rap', 'Trap', 'Techno', 'Rock',
+  'Blues', 'R&B/Soul', 'House', 'Drum & Bass', 'Dubstep', 'Ambient', 'Reggae', 'Metal', 'Funk'
 ];
+
+const GENRE_ALIASES: Record<string, string[]> = {
+  Rap: ['Hip-Hop/Rap'],
+  Lofi: ['Lo-Fi'],
+  'Drum & Bass': ['Drum and Bass', 'DnB'],
+};
 
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop';
 
@@ -109,7 +116,6 @@ function formatDate(value?: string): string {
 }
 
 const basePath = (Constants.expoConfig?.experiments?.baseUrl ?? '').replace(/\/$/, '');
-const SaveDataContext = createContext(false);
 type TrackCards = Record<string, { path: string; thumbnail?: string; cover?: string | null; quality?: { format: string; kbps: number } }>;
 type PlaybackProgress = { id: string; seconds: number; time: number; position: number; ticket?: ListeningTicket; sending?: boolean };
 const TrackCardsContext = createContext<TrackCards>({});
@@ -159,14 +165,11 @@ function mapCloudTrack(item: any): Track {
 
 function TrackCoverImage({ track, style }: { track: Track | null; style: any }) {
   const cards = useContext(TrackCardsContext);
-  const saveData = useContext(SaveDataContext);
   const [failedUri, setFailedUri] = useState('');
   const original = track?.cover_url || track?.cover_key || '';
   const repair = track && cards[track.id]?.cover;
   // User replacements use a new owner-scoped URL and should win over the last build's repair.
-  const regularCover = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
-  const thumbnail = track && cards[track.id]?.thumbnail;
-  const coverUri = saveData ? thumbnail || track?.small_cover_url || '' : regularCover;
+  const coverUri = /\/[^/]+_cover\.jpg(?:\?|$)/.test(original) && repair !== undefined ? (repair || '') : repair && !original ? repair : original;
   return <View style={[style, { overflow: 'hidden', backgroundColor: '#e5e5ea', justifyContent: 'center', alignItems: 'center' }]}>
     {coverUri && failedUri !== coverUri
       ? <Image source={{ uri: coverUri }} style={{ width: '100%', height: '100%' }} resizeMode="contain" onError={() => setFailedUri(coverUri)} />
@@ -217,12 +220,6 @@ function CatalogScreen() {
   const [batchTracks, setBatchTracks] = useState<Track[] | null>(null);
   const [canModerate, setCanModerate] = useState(false);
   const [showModeration, setShowModeration] = useState(false);
-  const [saveData, setSaveData] = useState(() => {
-    try { return localStorage.getItem('ritm_save_data') === 'true'; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('ritm_save_data', String(saveData)); } catch {}
-  }, [saveData]);
   const [authorResults, setAuthorResults] = useState<{ id: string; username: string }[]>([]);
   const [audiusAuthors, setAudiusAuthors] = useState<{ id: string; name: string }[]>([]);
   const [externalArtist, setExternalArtist] = useState<{ name: string; tracks: Track[] } | null>(null);
@@ -259,7 +256,6 @@ function CatalogScreen() {
   const [showEqualizerModal, setShowEqualizerModal] = useState(false);
   const [showFullPlayer, setShowFullPlayer] = useState(false);
   const returnToFullPlayer = useRef(false);
-  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [selectedTrackMenu, setSelectedTrackMenu] = useState<{ track: Track; source: 'network' | 'my_music' | 'uploads' } | null>(null);
   const [selectedTrackDetails, setSelectedTrackDetails] = useState<Track | null>(null);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
@@ -333,8 +329,6 @@ function CatalogScreen() {
   }, [recentlyPlayed]);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const searchInputRef = useRef<TextInput>(null);
-  const focusSearch = useRef(false);
   const [versionFilter, setVersionFilter] = useState<TrackVersion | null>(null);
   const searchCatalog = useRef<{ tracks: Track[]; expires: number }>();
   const [catalogRevision, setCatalogRevision] = useState(0);
@@ -501,6 +495,8 @@ function CatalogScreen() {
 
     try {
       const term = query.trim();
+      const genreNames = [genre, ...(GENRE_ALIASES[genre] ?? [])];
+      const matchesGenre = (value: string) => genre === 'Все жанры' || genreNames.some(name => name.toLowerCase() === value.trim().toLowerCase());
       const match = '%' + term.replace(/[\\%_*]/g, char => '\\' + char) + '%';
       const localCatalog = async () => {
         const cached = searchCatalog.current;
@@ -509,7 +505,7 @@ function CatalogScreen() {
         const pageSize = term.length >= 2 ? 250 : 50;
         for (let from = 0; ; from += pageSize) {
           const select = db.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '').order('id');
-          if (term.length < 2 && genre !== 'Все жанры') select.ilike('genre', genre);
+          if (term.length < 2 && genre !== 'Все жанры') select.or(genreNames.map(name => 'genre.ilike.' + name).join(','));
           const { data, error } = await select.range(from, from + pageSize - 1).abortSignal(controller.signal);
           if (error) throw error;
           tracks.push(...(data ?? []).map(mapCloudTrack));
@@ -539,7 +535,7 @@ function CatalogScreen() {
       };
       const localMatches = new Set<string>();
       for (const track of local ?? []) {
-        if (genre !== 'Все жанры' && track.genre.toLowerCase() !== genre.toLowerCase()) continue;
+        if (!matchesGenre(track.genre)) continue;
         if (term.length < 2 || score(track) > 0 || (track.user_id && matchingProfiles.has(track.user_id))) {
           aggregated.push(track);
           localMatches.add(track.id);
@@ -553,7 +549,10 @@ function CatalogScreen() {
       const searchTerm = query.trim().length >= 2 ? query.trim() : (genre !== 'Все жанры' ? genre : '');
 
       let urlsToFetch: string[] = [];
-      if (searchTerm) {
+      if (term.length < 2 && genre !== 'Все жанры' && !['Chillout', 'Minimal House'].includes(genre)) {
+        const audiusGenre = genre === 'Rap' || genre === 'Lofi' ? GENRE_ALIASES[genre][0] : genre;
+        urlsToFetch = [`${host}/v1/tracks/trending?app_name=RITM_APP&limit=100&genre=${encodeURIComponent(audiusGenre)}`];
+      } else if (searchTerm) {
         urlsToFetch = [`${host}/v1/tracks/search?query=${encodeURIComponent(searchTerm)}&app_name=RITM_APP&limit=100`];
       } else {
         urlsToFetch = [
@@ -576,7 +575,7 @@ function CatalogScreen() {
       responses.forEach((res) => {
         if (res && res.data && Array.isArray(res.data)) {
           const items = res.data.map((item: any) => mapAudiusTrack(item, host))
-            .filter((track: Track) => genre === 'Все жанры' || track.genre.toLowerCase() === genre.toLowerCase());
+            .filter((track: Track) => matchesGenre(track.genre));
           aggregated.push(...items);
         }
       });
@@ -667,7 +666,7 @@ function CatalogScreen() {
   useEffect(() => {
     try { localStorage.setItem('ritm_crossfade_seconds', String(crossfade)); } catch {}
     cancelTransition();
-  }, [crossfade, m.playbackSpeed, saveData]);
+  }, [crossfade, m.playbackSpeed]);
 
   useEffect(() => { cancelTransition(false); }, [isShuffle, isRepeat, nextTracks]);
 
@@ -774,7 +773,7 @@ function CatalogScreen() {
         audio.removeEventListener('playing', resetClock);
       };
     }
-  }, [activeAudio, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume, saveData]);
+  }, [activeAudio, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume]);
 
   const seekTo = (seconds: number) => {
     const audio = webAudioRef.current;
@@ -930,7 +929,7 @@ function CatalogScreen() {
     if (!crossfade || isRepeat || fadingTrack.current || !mixer.current || !spareAudio.current ||
       outgoing.paused || outgoing.seeking || playingRequest.current !== playRequest.current) return;
     const remaining = (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate;
-    if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + (saveData ? 0 : 10)) return;
+    if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + 10) return;
     let prepared = preparedTransition.current;
     if (!prepared) {
       const track = queuedNext.current[nextIndex()];
@@ -1207,52 +1206,13 @@ function CatalogScreen() {
 
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
 
-  const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition });
-  mediaActions.current = { next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition };
-  useEffect(() => {
-    if (activeTab === 'main' && focusSearch.current) {
-      focusSearch.current = false;
-      searchInputRef.current?.focus();
-    }
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web' || compact) return;
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (target?.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')) return;
-      if (showKeyboardHelp || showEqualizerModal || (!showFullPlayer && document.querySelector('[aria-modal="true"],[role="dialog"]'))) return;
-
-      const key = event.key;
-      if (!event.shiftKey && key === '/' && !showFullPlayer) {
-        event.preventDefault();
-        if (activeTab === 'main') searchInputRef.current?.focus();
-        else { focusSearch.current = true; setActiveTab('main'); }
-        return;
-      }
-      if (!webAudioRef.current?.hasAttribute('src')) return;
-      if (key === ' ' && !event.shiftKey && !target?.closest('button,a,[role="button"],[role="switch"],[role="checkbox"]')) {
-        event.preventDefault();
-        if (!event.repeat) void mediaActions.current.toggle();
-      } else if (key === 'ArrowRight' || key === 'ArrowLeft') {
-        event.preventDefault();
-        if (event.shiftKey) {
-          if (!event.repeat) (key === 'ArrowRight' ? mediaActions.current.next : mediaActions.current.previous)();
-        } else {
-          mediaActions.current.seek(clock.read() + (key === 'ArrowRight' ? 5 : -5));
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [compact, activeTab, showFullPlayer, showKeyboardHelp, showEqualizerModal]);
-
+  const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition });
+  mediaActions.current = { next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition };
   useEffect(() => {
     if (Platform.OS !== 'web' || !('mediaSession' in navigator) || !m.currentTrack) return;
     const media = navigator.mediaSession;
     const track: Track = m.currentTrack;
-    const artwork = saveData ? trackCards[track.id]?.thumbnail || track.small_cover_url : track.cover_url;
+    const artwork = track.cover_url;
     media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: artwork ? [{ src: artwork }] : [] });
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
       play: () => { void webAudioRef.current?.play().then(m.resumeTrack).catch(() => {}); },
@@ -1270,7 +1230,7 @@ function CatalogScreen() {
         try { media.setActionHandler(action as MediaSessionAction, null); } catch {}
       }
     };
-  }, [m.currentTrack?.id, saveData, trackCards]);
+  }, [m.currentTrack?.id]);
   useEffect(() => {
     if (Platform.OS === 'web' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
@@ -1278,7 +1238,7 @@ function CatalogScreen() {
   }, [m.currentTrack?.id, m.isPlaying]);
 
   return (
-    <SaveDataContext.Provider value={saveData}><TrackCardsContext.Provider value={trackCards}>
+    <TrackCardsContext.Provider value={trackCards}>
     <View style={{ flex: 1, flexDirection: 'column', backgroundColor: '#f2f2f7' }}>
       <View style={{ flex: 1, flexDirection: compact ? 'column' : 'row', overflow: 'hidden' }}>
         
@@ -1465,7 +1425,7 @@ function CatalogScreen() {
               </View>}
 
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
-                <TextInput ref={searchInputRef}
+                <TextInput
                   placeholder="Поиск треков и исполнителей..."
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
@@ -1719,7 +1679,7 @@ function CatalogScreen() {
                     })}
                   >
                     <View style={{ width: '100%', height: 100, borderRadius: 12, backgroundColor: '#e5e5ea', marginBottom: 8, justifyContent: 'center', alignItems: 'center' }}>
-                      {saveData && pl.tracks[0] ? <TrackCoverImage track={pl.tracks[0]} style={{ width: '100%', height: '100%' }} /> : pl.cover && !saveData ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
+                      {pl.cover ? <Image source={{ uri: pl.cover }} style={{ width: '100%', height: '100%', borderRadius: 12 }} /> : <Text style={{ fontSize: 32 }}>📚</Text>}
                     </View>
                     <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#000000' }}>{pl.title}</Text>
                     <Text numberOfLines={1} style={{ fontSize: 11, color: '#8e8e93', marginTop: 2 }}>{pl.tracks.length} треков</Text>
@@ -2022,7 +1982,7 @@ function CatalogScreen() {
                   shadowOpacity: 0.3,
                   shadowRadius: 8
                 }}>
-                  {saveData ? <TrackCoverImage track={selectedPlaylistModal.tracks[0] || null} style={{ width: '100%', height: '100%' }} /> : selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url ? (
+                  {selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url ? (
                     <Image source={{ uri: selectedPlaylistModal.cover || selectedPlaylistModal.tracks[0]?.cover_url || undefined }} style={{ width: '100%', height: '100%' }} />
                   ) : (
                     <Text style={{ fontSize: 42 }}>🎵</Text>
@@ -2168,16 +2128,7 @@ function CatalogScreen() {
         icon={(name, size, color) => <WebIcon name={name} size={size} color={color} />} />}</PlaybackClock>}
 
       {showEqualizerModal && <EqualizerPanel close={() => closePlayerPanel(() => setShowEqualizerModal(false))}
-        saveData={saveData} setSaveData={setSaveData} normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade}
-        keyboardHelp={compact ? undefined : () => { setShowEqualizerModal(false); setShowKeyboardHelp(true); }} />}
-
-      {showKeyboardHelp && <CollectionPanel title="Горячие клавиши" close={() => { setShowKeyboardHelp(false); setShowEqualizerModal(true); }}>
-        {[['Пробел', 'Пауза или воспроизведение'], ['← / →', 'Перемотать на 5 секунд'], ['Shift + ← / →', 'Предыдущий или следующий трек'], ['/', 'Открыть поиск']].map(([key, action]) =>
-          <View key={key} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
-            <Text style={{ color: '#fff', backgroundColor: '#ffffff18', padding: 9, borderRadius: 8, minWidth: 95, textAlign: 'center', fontWeight: '800' }}>{key}</Text>
-            <Text style={{ color: '#eee', flex: 1 }}>{action}</Text>
-          </View>)}
-      </CollectionPanel>}
+        normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade} />}
 
       {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackDetails} onRequestClose={() => setSelectedTrackDetails(null)}>
@@ -2210,9 +2161,6 @@ function CatalogScreen() {
                   <Text style={{ color: '#fff', fontWeight: '900' }}>Слушать</Text>
                 </Pressable>
                 <View style={{ gap: 8, marginTop: 12 }}>
-                  {selectedTrackDetails.user_id && selectedTrackDetails.user_id === authUser?.id && <PrimaryButton variant="soft" title="Редактировать трек" onPress={() => {
-                    setEditingTrack(selectedTrackDetails); setSelectedTrackDetails(null);
-                  }} />}
                   {selectedTrackDetails.description ? <Text style={{ color: '#eee' }}>{selectedTrackDetails.description}</Text> : null}
                   <PrimaryButton variant="soft" title="Добавить в плейлист" onPress={() => {
                     setSelectedTrackMenu({ track: selectedTrackDetails, source: 'network' });
@@ -2394,7 +2342,7 @@ function CatalogScreen() {
         setArtistId(null); router.push('/sign-in');
       }} play={(track, queue) => { setArtistId(null); void safePlayTrack(track, queue, 'Автор'); }} />}
       {shared && <CollectionPanel title={shared.title} close={() => setShared(null)}>
-        {shared.cover && !saveData && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}
+        {shared.cover && <Image source={{ uri: shared.cover }} style={{ width: 100, height: 100, borderRadius: 14 }} />}
         {shared.tracks.length ? <TrackList tracks={shared.tracks} play={track => {
           void safePlayTrack(track, shared.tracks, 'Общий плейлист'); setShared(null);
         }} /> : <Text>В плейлисте пока нет доступных треков.</Text>}
@@ -2412,6 +2360,6 @@ function CatalogScreen() {
         }} />
       </CollectionPanel>}
     </View>
-    </TrackCardsContext.Provider></SaveDataContext.Provider>
+    </TrackCardsContext.Provider>
   );
 }

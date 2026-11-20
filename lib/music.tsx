@@ -47,6 +47,10 @@ export const EQ_PRESETS: { [key: string]: number[] } = {
   'Pop': [-1, 2, 4, 5, 4, 1, -1, -2, -1, 1, 3, 4],
   'Rock': [5, 4, 3, 1, -1, -1, 1, 3, 4, 5, 5, 4],
   'Electronic': [5, 5, 3, 0, -2, 2, 1, 2, 4, 5, 5, 4],
+  'Treble': [0, 0, 0, 0, 0, 0, 0, 2, 4, 5, 4, 3],
+  'Presence': [-2, -2, -1, 0, 1, 2, 3, 4, 4, 3, 2, 1],
+  'Vocals': [-3, -2, -1, 0, 2, 4, 5, 3, 1, 0, -1, -1],
+  'Soft': [1, 2, 2, 1, 0, 0, -1, -2, -3, -4, -4, -4],
 };
 
 export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
