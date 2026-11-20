@@ -10,6 +10,11 @@ export function registerOfflineShell() {
     const style = document.createElement('style');
     style.id = 'ritm-motion';
     style.textContent = `
+      .ritm-playlist-actions { position:absolute; inset:0; display:flex; align-items:center; justify-content:space-around; background:#27292c99; opacity:0; transition:opacity 180ms ease; pointer-events:none; }
+      .ritm-playlist-card:hover .ritm-playlist-actions, .ritm-playlist-card:focus-within .ritm-playlist-actions { opacity:1; }
+      .ritm-playlist-actions button { border:0; color:white; background:transparent; font-size:28px; cursor:pointer; padding:8px; pointer-events:auto; }
+      .ritm-playlist-actions button:disabled { opacity:0.3; }
+      @media (hover:none) { .ritm-playlist-actions {opacity:1;} }
       [data-ritm-row], [data-ritm-row] * { user-select: none !important; }
       [data-ritm-row][data-over=yes] { box-shadow: inset 0 2px #66cdbb; }
       @media (prefers-reduced-motion: no-preference) {

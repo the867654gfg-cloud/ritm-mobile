@@ -1,7 +1,7 @@
 import type { Track } from './music-data';
 import { supabase } from './supabase';
 
-export type UserPlaylist = { id: string; title: string; tracks: Track[]; cover?: string };
+export type UserPlaylist = { id: string; title: string; tracks: Track[]; cover?: string; description?: string; author_id?: string };
 
 type LibrarySnapshot = {
   favorites: Track[];
@@ -20,7 +20,7 @@ export async function loadUserLibrary(userId: string): Promise<LibrarySnapshot> 
   if (!supabase) return { favorites: [], playlists: [], history: [] };
   const [favoritesResult, playlistsResult, playlistTracksResult, historyResult] = await Promise.all([
     supabase.from('user_favorites').select('track_data').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('user_playlists').select('id, title, cover_url').eq('user_id', userId).order('created_at', { ascending: false }),
+    supabase.from('user_playlists').select('id, title, cover_url, description, user_id, sort_order').eq('user_id', userId).order('sort_order').order('created_at', { ascending: false }),
     supabase.from('user_playlist_tracks').select('playlist_id, track_data, position').eq('user_id', userId).order('position').order('added_at'),
     supabase.from('listening_history').select('track_data').eq('user_id', userId).order('played_at', { ascending: false }).limit(30),
   ]);
@@ -32,7 +32,7 @@ export async function loadUserLibrary(userId: string): Promise<LibrarySnapshot> 
   const trackRows = playlistTracksResult.data ?? [];
   const playlists = (playlistsResult.data ?? []).map((playlist: any) => ({
     id: playlist.id,
-    title: playlist.title,
+    title: playlist.title, description: playlist.description, author_id: playlist.user_id,
     cover: playlist.cover_url ?? undefined,
     tracks: trackRows.filter((row: any) => row.playlist_id === playlist.id).map((row: any) => asTrack(row.track_data)).filter(Boolean) as Track[],
   }));
