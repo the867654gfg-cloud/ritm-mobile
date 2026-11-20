@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { Platform } from 'react-native';
 import { Track } from './music-data';
+import { BrowserAudio } from './browser-audio';
 
 interface MusicContextType {
   currentTrack: Track | null;
@@ -20,7 +21,8 @@ interface MusicContextType {
    * Безопасно вызывать много раз: элемент подключается только один раз.
    * Вызов из обработчика нажатия нужен, потому что браузер не запускает звук без жеста пользователя.
    */
-  attachAudioElement: (element: HTMLAudioElement) => void;
+  attachAudioElement: (element: HTMLAudioElement, volume: number, wake?: boolean) => BrowserAudio | undefined;
+  releaseAudioElement: (element: HTMLAudioElement) => void;
 }
 
 const MusicContext = createContext<MusicContextType | null>(null);
@@ -53,77 +55,26 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [playbackSpeed, setPlaybackSpeedState] = useState<number>(1.0);
   const [eqGains, setEqGains] = useState<number[]>(savedGains);
 
-  // Web Audio API для эквалайзера в браузере
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const filtersRef = useRef<BiquadFilterNode[]>([]);
-  const inputLevelRef = useRef<GainNode | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const sourceElementRef = useRef<HTMLAudioElement | null>(null);
-
-  // Актуальные значения полос, чтобы фильтры при создании сразу получили текущие настройки
-  const eqGainsRef = useRef<number[]>(eqGains);
-  eqGainsRef.current = eqGains;
-
-  function updateFilters(values: number[]) {
-    const ctx = audioCtxRef.current;
-    if (!ctx || !inputLevelRef.current) return;
-    filtersRef.current.forEach((filter, i) => filter.gain.setTargetAtTime(values[i], ctx.currentTime, 0.03));
-    const boost = Math.max(0, ...values);
-    inputLevelRef.current.gain.setTargetAtTime(10 ** (-(boost ? boost + 2 : 0) / 20), ctx.currentTime, 0.04);
-  }
+  const graph = useRef<BrowserAudio>();
   useEffect(() => {
-    updateFilters(eqGains);
+    graph.current?.setEqualizer(eqGains);
     if (Platform.OS === 'web') {
       try { localStorage.setItem(eqKey, JSON.stringify(eqGains)); } catch {}
     }
   }, [eqGains]);
 
-  const attachAudioElement = (element: HTMLAudioElement) => {
+  const attachAudioElement = (element: HTMLAudioElement, volume: number, wake = true) => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !element) return;
     try {
-      // createMediaElementSource можно вызвать для одного элемента только один раз
-      if (sourceElementRef.current !== element) {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        if (!AudioContextClass) return;
-
-        const ctx: AudioContext = audioCtxRef.current ?? new AudioContextClass();
-        audioCtxRef.current = ctx;
-
-        sourceRef.current?.disconnect();
-        inputLevelRef.current?.disconnect();
-        filtersRef.current.forEach(filter => filter.disconnect());
-        const source = ctx.createMediaElementSource(element);
-        const inputLevel = ctx.createGain();
-
-        // 12 BiquadFilterNode, по одному на полосу
-        const filters = EQ_FREQUENCIES.map((freq, i) => {
-          const filter = ctx.createBiquadFilter();
-          filter.type = 'peaking';
-          filter.frequency.value = Math.min(freq, ctx.sampleRate * 0.49);
-          filter.Q.value = 1.4;
-          filter.gain.value = eqGainsRef.current[i] ?? 0;
-          return filter;
-        });
-
-        // source -> f0 -> f1 -> ... -> f11 -> выход
-        source.connect(inputLevel);
-        inputLevel.connect(filters[0]);
-        for (let i = 0; i < filters.length - 1; i++) {
-          filters[i].connect(filters[i + 1]);
-        }
-        filters[filters.length - 1].connect(ctx.destination);
-
-        filtersRef.current = filters;
-        sourceRef.current = source;
-        inputLevelRef.current = inputLevel;
-        sourceElementRef.current = element;
-        updateFilters(eqGainsRef.current);
-      }
-
-      const ctx = audioCtxRef.current;
-      if (ctx && ctx.state === 'suspended') {
-        void ctx.resume();
-      }
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const mixer = graph.current ??= new BrowserAudio(new AudioContextClass(), EQ_FREQUENCIES);
+      mixer.attach(element);
+      mixer.setVolume(volume);
+      mixer.setEqualizer(eqGains);
+      element.volume = 1;
+      if (wake) mixer.wake();
+      return mixer;
     } catch (e) {
       console.warn('Эквалайзер: не удалось подключить Web Audio', e);
     }
@@ -179,6 +130,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       applyPreset,
       resetEq,
       attachAudioElement,
+      releaseAudioElement: element => graph.current?.detach(element),
     }}>
       {children}
     </MusicContext.Provider>
@@ -202,6 +154,7 @@ export const useMusic = () => {
       applyPreset: () => {},
       resetEq: () => {},
       attachAudioElement: () => {},
+      releaseAudioElement: () => {},
     };
   }
   return context;

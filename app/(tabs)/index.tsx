@@ -12,6 +12,8 @@ import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
 import { searchScore, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
 import { BatchTrackEditor, type TrackMetadata } from '../../components/BatchTrackEditor';
 import { EqualizerPanel } from '../../components/EqualizerPanel';
+import { FullPlayer } from '../../components/FullPlayer';
+import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
@@ -171,6 +173,22 @@ function mapAudiusTrack(item: any, host: string): Track {
     published_at: item.release_date, description: item.description };
 }
 
+function trackAudioUrl(track: Track) {
+  const raw = (track.url || (track as any).audio_url || (track as any).audioUrl || '').trim();
+  if (!raw || /^(https?:|blob:)/.test(raw)) return raw;
+  const base = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
+  const path = raw.replace(/^\/+/, '');
+  return base + '/' + (path.startsWith('storage/v1/object/public/') ? path : 'storage/v1/object/public/music-storage/' + path);
+}
+
+type PreparedTransition = {
+  audio: HTMLAudioElement;
+  track: Track;
+  request: number;
+  approved: boolean;
+  starting: boolean;
+};
+
 export default function CatalogRoute() {
   const { user, loading } = useAuth();
   if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#fa233b" />;
@@ -216,6 +234,9 @@ function CatalogScreen() {
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showEqualizerModal, setShowEqualizerModal] = useState(false);
+  const [showFullPlayer, setShowFullPlayer] = useState(false);
+  const returnToFullPlayer = useRef(false);
+  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [selectedTrackMenu, setSelectedTrackMenu] = useState<{ track: Track; source: 'network' | 'my_music' | 'uploads' } | null>(null);
   const [selectedTrackDetails, setSelectedTrackDetails] = useState<Track | null>(null);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
@@ -289,6 +310,8 @@ function CatalogScreen() {
   }, [recentlyPlayed]);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<TextInput>(null);
+  const focusSearch = useRef(false);
   const [versionFilter, setVersionFilter] = useState<TrackVersion | null>(null);
   const searchCatalog = useRef<{ tracks: Track[]; expires: number }>();
   const [catalogRevision, setCatalogRevision] = useState(0);
@@ -307,6 +330,13 @@ function CatalogScreen() {
   const [prevVolume, setPrevVolume] = useState(0.7);
   const [isShuffle, setIsShuffle] = useState(false);
   const [isRepeat, setIsRepeat] = useState(false);
+  const [normalization, setNormalization] = useState(() => {
+    try { return localStorage.getItem('ritm_normalize_volume') === 'true'; } catch { return false; }
+  });
+  const [crossfade, setCrossfade] = useState<number>(() => {
+    try { return CROSSFADE_OPTIONS.find(value => String(value) === localStorage.getItem('ritm_crossfade_seconds')) ?? 0; }
+    catch { return 0; }
+  });
 
   const [currentTime, setCurrentTime] = useState(0);
   const [trackDuration, setTrackDuration] = useState(0);
@@ -314,7 +344,13 @@ function CatalogScreen() {
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
 
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [activeAudio, setActiveAudio] = useState<HTMLAudioElement | null>(null);
+  const spareAudio = useRef<HTMLAudioElement>();
+  const mixer = useRef<BrowserAudio>();
+  const preparedTransition = useRef<PreparedTransition>();
+  const fadingTrack = useRef<{ audio: HTMLAudioElement; timer: ReturnType<typeof setTimeout>; session?: PlaybackProgress }>();
   const playRequest = useRef(0);
+  const playingRequest = useRef(0);
   const queuedNext = useRef<Track[]>([]);
   const queuePriority = useRef<string | undefined>();
   const previousTracks = useRef<Track[]>([]);
@@ -565,14 +601,73 @@ function CatalogScreen() {
   };
 
   useEffect(() => () => { searchAbortRef.current?.abort(); }, []);
-  useEffect(() => () => {
-    playRequest.current++;
-    webAudioRef.current?.pause();
-    m.clearTrack?.();
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof Audio === 'undefined') return;
+    const first = new Audio();
+    const second = new Audio();
+    first.crossOrigin = second.crossOrigin = 'anonymous';
+    webAudioRef.current = first;
+    spareAudio.current = second;
+    setActiveAudio(first);
+    return () => {
+      playRequest.current++;
+      cancelTransition();
+      for (const audio of [first, second]) {
+        clearAudio(audio);
+        m.releaseAudioElement?.(audio);
+      }
+      m.clearTrack?.();
+    };
   }, []);
 
-  function countPlayback(audio: HTMLAudioElement) {
-    const session = playback.current;
+  useEffect(() => {
+    try { localStorage.setItem('ritm_normalize_volume', String(normalization)); } catch {}
+    if (!normalization) {
+      if (webAudioRef.current) mixer.current?.resetLevel(webAudioRef.current);
+      if (spareAudio.current) mixer.current?.resetLevel(spareAudio.current);
+    }
+  }, [normalization]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ritm_crossfade_seconds', String(crossfade)); } catch {}
+    cancelTransition();
+  }, [crossfade, m.playbackSpeed]);
+
+  useEffect(() => { cancelTransition(false); }, [isShuffle, isRepeat, nextTracks]);
+
+  useEffect(() => {
+    if (mixer.current) mixer.current.setVolume(volume);
+    else if (webAudioRef.current) webAudioRef.current.volume = volume;
+  }, [volume]);
+
+  function clearAudio(audio: HTMLAudioElement) {
+    audio.pause();
+    if (audio.hasAttribute('src')) {
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    mixer.current?.setFade(audio, 1);
+  }
+
+  function finishFade(tail: NonNullable<typeof fadingTrack.current>) {
+    if (fadingTrack.current !== tail) return;
+    fadingTrack.current = undefined;
+    clearTimeout(tail.timer);
+    if (tail.session) countPlayback(tail.audio, tail.session);
+    clearAudio(tail.audio);
+  }
+
+  function cancelTransition(includeTail = true) {
+    const prepared = preparedTransition.current;
+    preparedTransition.current = undefined;
+    if (prepared) clearAudio(prepared.audio);
+    if (includeTail && fadingTrack.current) {
+      finishFade(fadingTrack.current);
+      if (webAudioRef.current) mixer.current?.setFade(webAudioRef.current, 1);
+    }
+  }
+
+  function countPlayback(audio: HTMLAudioElement, session = playback.current) {
     if (!session) return;
     const now = performance.now();
     const elapsed = (now - session.time) / 1000;
@@ -592,20 +687,15 @@ function CatalogScreen() {
   }
 
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      if (!webAudioRef.current) {
-        const el = new Audio();
-        // Нужно для Web Audio (эквалайзер): без CORS браузер глушит звук сторонних источников
-        el.crossOrigin = 'anonymous';
-        webAudioRef.current = el;
-        m?.attachAudioElement?.(el);
-      }
-      webAudioRef.current.volume = volume;
-      webAudioRef.current.playbackRate = m?.playbackSpeed || 1.0;
-      const audio = webAudioRef.current;
+    if (activeAudio) {
+      const audio = activeAudio;
+      audio.playbackRate = m.playbackSpeed || 1;
       
       const updateTime = () => {
+        if (audio !== webAudioRef.current) return;
         countPlayback(audio);
+        if (normalization) mixer.current?.measureLevel(audio);
+        if (!isDraggingSeek) checkTransition(audio);
         if (!isDraggingSeek) {
           const dur = audio.duration || trackDuration || 0;
           if (dur > 0) {
@@ -615,21 +705,20 @@ function CatalogScreen() {
           }
         } 
       };
-      const updateDuration = () => { 
-        if (audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
-          setTrackDuration(audio.duration);
-          if (m?.currentTrack && (!m.currentTrack.duration || m.currentTrack.duration === 180)) {
-            m.currentTrack.duration = audio.duration;
-          }
-        } 
+      const updateDuration = () => {
+        if (audio === webAudioRef.current && Number.isFinite(audio.duration) && audio.duration > 0) setTrackDuration(audio.duration);
       };
 
       audio.addEventListener('timeupdate', updateTime);
       audio.addEventListener('loadedmetadata', updateDuration);
       const ended = () => {
+        if (audio !== webAudioRef.current) return;
         countPlayback(audio);
+        if (playingRequest.current !== playRequest.current) return;
+        cancelTransition();
         if (isRepeat && m.currentTrack) void safePlayTrack(m.currentTrack, undefined, playContext.current, 0, true);
-        else handleNext();
+        else if (queuedNext.current.length) handleNext();
+        else void m.pauseTrack();
       };
       const resetClock = () => {
         if (playback.current) {
@@ -648,18 +737,25 @@ function CatalogScreen() {
         audio.removeEventListener('playing', resetClock);
       };
     }
-  }, [isDraggingSeek, isShuffle, isRepeat, trackDuration, m?.currentTrack, m?.playbackSpeed]);
+  }, [activeAudio, isDraggingSeek, isShuffle, isRepeat, trackDuration, m.currentTrack, m.playbackSpeed, crossfade, normalization, nextTracks, volume]);
+
+  const seekTo = (seconds: number) => {
+    const audio = webAudioRef.current;
+    if (!audio || !Number.isFinite(audio.duration) || !Number.isFinite(seconds)) return;
+    cancelTransition();
+    audio.currentTime = Math.max(0, Math.min(seconds, audio.duration));
+    setCurrentTime(audio.currentTime);
+  };
 
   const updateSeekPosition = (clientX: number) => {
-    const activeDuration = m?.currentTrack?.duration || trackDuration || 0;
+    const activeDuration = webAudioRef.current?.duration || trackDuration;
     if (!activeDuration || !seekBarContainerRef.current) return;
     let rect: any = null;
     if (seekBarContainerRef.current.getBoundingClientRect) rect = seekBarContainerRef.current.getBoundingClientRect();
     if (!rect || !rect.width) return;
     const offsetX = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const newTime = (offsetX / rect.width) * activeDuration;
-    setCurrentTime(newTime);
-    if (Platform.OS === 'web' && webAudioRef.current) webAudioRef.current.currentTime = newTime;
+    seekTo(newTime);
   };
 
   const updateVolumePosition = (clientX: number) => {
@@ -670,7 +766,6 @@ function CatalogScreen() {
     const offsetX = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const newVol = Math.max(0, Math.min(1, offsetX / rect.width));
     setVolume(newVol);
-    if (Platform.OS === 'web' && webAudioRef.current) webAudioRef.current.volume = newVol;
   };
 
   useEffect(() => {
@@ -694,10 +789,9 @@ function CatalogScreen() {
   }, [isDraggingSeek, isDraggingVolume, trackDuration, m?.currentTrack?.duration]);
 
   const stopAudio = () => {
+    cancelTransition();
     if (Platform.OS === 'web' && webAudioRef.current) {
-      webAudioRef.current.pause();
-      webAudioRef.current.currentTime = 0;
-      webAudioRef.current.src = '';
+      clearAudio(webAudioRef.current);
       setCurrentTime(0);
     }
     try { if (typeof m?.pauseTrack === 'function') m.pauseTrack(); } catch (e) {}
@@ -707,10 +801,18 @@ function CatalogScreen() {
 
   const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0, fromQueue = false, back = false) => {
     const request = ++playRequest.current;
+    cancelTransition();
+    const audio = webAudioRef.current;
+    if (audio) mixer.current = m.attachAudioElement?.(audio, volume) ?? mixer.current;
     if (supabase && (Platform.OS !== 'web' || navigator.onLine)) {
       const visible = await supabase.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).maybeSingle();
       if (request !== playRequest.current) return;
-      if (visible.data || visible.error) { setNotice('Этот трек сейчас недоступен.'); return; }
+      if (visible.data || visible.error) {
+        playingRequest.current = request;
+        if (audio?.ended) void m.pauseTrack();
+        setNotice('Этот трек сейчас недоступен.');
+        return;
+      }
     }
     const last = m.currentTrack as Track | null;
     if (!back && last && last.id !== track.id) previousTracks.current = [...previousTracks.current, last].slice(-60);
@@ -732,18 +834,7 @@ function CatalogScreen() {
       }
     } catch (e) {}
 
-    let rawUrl = track.url || (track as any).audio_url || (track as any).audioUrl || playableTrack?.url || '';
-
-    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://') || rawUrl.startsWith('blob:')) {
-    } else if (rawUrl.trim().length > 0) {
-      const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ewrbxlrenzorutlvdgil.supabase.co';
-      const cleanPath = rawUrl.replace(/^\/+/, '');
-      if (cleanPath.startsWith('storage/v1/object/public/')) {
-        rawUrl = `${SUPABASE_URL}/${cleanPath}`;
-      } else {
-        rawUrl = `${SUPABASE_URL}/storage/v1/object/public/music-storage/${cleanPath}`;
-      }
-    }
+    const rawUrl = trackAudioUrl(playableTrack);
 
     setTrackDuration(track.duration || playableTrack?.duration || 180);
     setCurrentTime(0);
@@ -754,9 +845,9 @@ function CatalogScreen() {
       if (!rawUrl) { void m.pauseTrack(); setNotice('У трека нет доступного аудиофайла.'); return; }
       try {
         audio.src = rawUrl;
-        audio.volume = volume;
+        if (!mixer.current) audio.volume = volume;
         audio.playbackRate = m?.playbackSpeed || 1.0;
-        m?.attachAudioElement?.(audio);
+        mixer.current?.resetLevel(audio);
         try { await audio.play(); } catch (error) {
           const audiusId = track.raw_id || (track.id.startsWith('audius_') ? track.id.slice(7) : null);
           if (!audiusId || request !== playRequest.current) throw error;
@@ -765,18 +856,8 @@ function CatalogScreen() {
         }
         if (request !== playRequest.current) return;
         if (startAt > 0 && startAt < audio.duration) audio.currentTime = startAt;
-        setRecentlyPlayed(previous => [track, ...previous.filter(item => item.id !== track.id)].slice(0, 30));
-        if (authUser) {
-          const entry: PlaybackProgress = { id: track.id, seconds: 0, time: performance.now(), position: audio.currentTime };
-          playback.current = entry;
-          const source = context === 'Автор' ? 'artist' : context === 'Общий плейлист' ? 'shared'
-            : context === 'Моя музыка' ? 'library' : context === 'Слушать' ? 'catalog' : 'playlist';
-          void recordListening(authUser.id, track, source).then(ticket => {
-            if (!ticket) return;
-            entry.ticket = ticket;
-            setPlayCounts(previous => ({ ...previous, [track.id]: { starts: ticket.starts, listens: previous[track.id]?.listens ?? 0 } }));
-          }).catch(() => setNotice('Не удалось синхронизировать прослушивание.'));
-        }
+        playingRequest.current = request;
+        registerPlayback(track, audio, context);
       } catch {
         if (request === playRequest.current) {
           void m.pauseTrack();
@@ -786,14 +867,98 @@ function CatalogScreen() {
     }
   };
 
-  const handleNext = () => {
+  function registerPlayback(track: Track, audio: HTMLAudioElement, context = playContext.current) {
+    setRecentlyPlayed(previous => [track, ...previous.filter(item => item.id !== track.id)].slice(0, 30));
+    if (!authUser) return;
+    const entry: PlaybackProgress = { id: track.id, seconds: 0, time: performance.now(), position: audio.currentTime };
+    playback.current = entry;
+    const source = context === 'Автор' ? 'artist' : context === 'Общий плейлист' ? 'shared'
+      : context === 'Моя музыка' ? 'library' : context === 'Слушать' ? 'catalog' : 'playlist';
+    void recordListening(authUser.id, track, source).then(ticket => {
+      if (!ticket) return;
+      entry.ticket = ticket;
+      setPlayCounts(previous => ({ ...previous, [track.id]: { starts: ticket.starts, listens: previous[track.id]?.listens ?? 0 } }));
+    }).catch(() => setNotice('Не удалось синхронизировать прослушивание.'));
+  }
+
+  function nextIndex() {
     const items = queuedNext.current;
-    if (!items.length) { void m.pauseTrack(); return; }
-    const priorityIndex = items.findIndex(item => item.id === queuePriority.current);
-    const index = priorityIndex >= 0 ? priorityIndex : isShuffle ? Math.floor(Math.random() * items.length) : 0;
+    const priority = items.findIndex(item => item.id === queuePriority.current);
+    return priority >= 0 ? priority : isShuffle ? Math.floor(Math.random() * items.length) : 0;
+  }
+
+  function takeFromQueue(index: number) {
+    const items = queuedNext.current;
     queuePriority.current = undefined;
     setUpcoming(items.filter((_, i) => i !== index));
-    void safePlayTrack(items[index], undefined, playContext.current, 0, true);
+    return items[index];
+  }
+
+  function checkTransition(outgoing: HTMLAudioElement) {
+    if (!crossfade || isRepeat || fadingTrack.current || !mixer.current || !spareAudio.current ||
+      outgoing.paused || outgoing.seeking || playingRequest.current !== playRequest.current) return;
+    const remaining = (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate;
+    if (!Number.isFinite(remaining) || remaining <= 0.2 || remaining > crossfade + 10) return;
+    let prepared = preparedTransition.current;
+    if (!prepared) {
+      const track = queuedNext.current[nextIndex()];
+      const rawUrl = track && trackAudioUrl(track);
+      if (!rawUrl) return;
+      const audio = spareAudio.current;
+      if (!m.attachAudioElement?.(audio, volume, false)) return;
+      mixer.current.setFade(audio, 0);
+      mixer.current.resetLevel(audio);
+      audio.playbackRate = outgoing.playbackRate;
+      audio.preload = 'auto';
+      const plan: PreparedTransition = { audio, track, request: playRequest.current, approved: !supabase || !navigator.onLine, starting: false };
+      preparedTransition.current = prepared = plan;
+      if (plan.approved) audio.src = rawUrl;
+      else void (async () => {
+        try {
+          const visibility = await supabase!.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).maybeSingle();
+          if (preparedTransition.current !== plan || visibility.data || visibility.error) return;
+          plan.approved = true;
+          audio.src = rawUrl;
+        } catch {}
+      })();
+    }
+    if (remaining > crossfade || !prepared.approved || prepared.starting || prepared.audio.readyState < 3) return;
+    const plan = prepared;
+    plan.starting = true;
+    void plan.audio.play().then(() => {
+      if (preparedTransition.current !== plan || plan.request !== playRequest.current) return;
+      const index = queuedNext.current.findIndex(item => item.id === plan.track.id);
+      const seconds = Math.min(crossfade, (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate);
+      if (index < 0 || outgoing.paused || outgoing.seeking || seconds <= 0.15 || !mixer.current) {
+        cancelTransition(false);
+        return;
+      }
+      preparedTransition.current = undefined;
+      const session = playback.current;
+      const previous = m.currentTrack as Track | null;
+      if (previous) previousTracks.current = [...previousTracks.current, previous].slice(-60);
+      playback.current = undefined;
+      webAudioRef.current = plan.audio;
+      spareAudio.current = outgoing;
+      const tail = { audio: outgoing, session, timer: setTimeout(() => finishFade(tail), seconds * 1000 + 120) };
+      fadingTrack.current = tail;
+      mixer.current.setFade(outgoing, 1, 0, seconds);
+      mixer.current.setFade(plan.audio, 0, 1, seconds);
+      const track = takeFromQueue(index);
+      setActiveAudio(plan.audio);
+      setCurrentTime(plan.audio.currentTime);
+      setTrackDuration(plan.audio.duration || track.duration || 0);
+      void m.playTrack(track);
+      registerPlayback(track, plan.audio);
+    }).catch(() => {
+      // The normal end-of-track path also handles autoplay or buffering failures.
+    });
+  }
+
+  const handleNext = () => {
+    const items = queuedNext.current;
+    if (!items.length) return;
+    void safePlayTrack(takeFromQueue(nextIndex()), undefined, playContext.current, 0, true);
   };
 
   const handlePrevious = () => {
@@ -805,6 +970,7 @@ function CatalogScreen() {
   };
 
   const playNext = (track: Track) => {
+    cancelTransition(false);
     queuePriority.current = track.id;
     setUpcoming([track, ...queuedNext.current.filter(item => item.id !== track.id)]);
     setSelectedTrackMenu(null);
@@ -816,29 +982,41 @@ function CatalogScreen() {
     if (!m.currentTrack && queuedNext.current.length) { handleNext(); return; }
     if (Platform.OS === 'web' && webAudioRef.current && webAudioRef.current.src) {
       if (webAudioRef.current.paused) {
-        m?.attachAudioElement?.(webAudioRef.current);
-        await webAudioRef.current.play().catch(() => {});
+        mixer.current = m.attachAudioElement?.(webAudioRef.current, volume) ?? mixer.current;
+        try {
+          await webAudioRef.current.play();
+          await m.resumeTrack();
+        } catch { setNotice('Этот трек сейчас не удалось воспроизвести.'); }
       } else {
+        cancelTransition();
         webAudioRef.current.pause();
+        await m.pauseTrack();
       }
+      return;
     }
-    try {
-      if (m?.isPlaying) { if (typeof m?.pauseTrack === 'function') await m.pauseTrack(); }
-      else { if (typeof m?.resumeTrack === 'function') await m.resumeTrack(); }
-    } catch (e) {}
   };
 
   const handleMuteToggle = () => {
     if (volume > 0) {
       setPrevVolume(volume);
       setVolume(0);
-      if (webAudioRef.current) webAudioRef.current.volume = 0;
     } else {
       const restored = prevVolume > 0 ? prevVolume : 0.7;
       setVolume(restored);
-      if (webAudioRef.current) webAudioRef.current.volume = restored;
     }
   };
+
+  function playerPanel(open: () => void) {
+    returnToFullPlayer.current = showFullPlayer;
+    setShowFullPlayer(false);
+    open();
+  }
+
+  function closePlayerPanel(close: () => void) {
+    close();
+    if (returnToFullPlayer.current && m.currentTrack) setShowFullPlayer(true);
+    returnToFullPlayer.current = false;
+  }
 
   const toggleAddToMyMusic = async (track: Track) => {
     if (!authUser) {
@@ -999,7 +1177,7 @@ function CatalogScreen() {
     }).slice(0, 20), cover_url: '' },
   ];
 
-  const activeDuration = m?.currentTrack?.duration || trackDuration || 180;
+  const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
   const progressPercent = activeDuration > 0 ? Math.min(100, Math.max(0, (currentTime / activeDuration) * 100)) : 0;
   const resumeInterval = Math.floor(currentTime / 5);
   useEffect(() => {
@@ -1009,8 +1187,47 @@ function CatalogScreen() {
     } catch {}
   }, [m.currentTrack?.id, resumeInterval, scopedKey]);
 
-  const mediaActions = useRef({ next: handleNext, previous: handlePrevious });
-  mediaActions.current = { next: handleNext, previous: handlePrevious };
+  const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition });
+  mediaActions.current = { next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay, cancelTransition };
+  useEffect(() => {
+    if (activeTab === 'main' && focusSearch.current) {
+      focusSearch.current = false;
+      searchInputRef.current?.focus();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || compact) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')) return;
+      if (showKeyboardHelp || showEqualizerModal || showQueue || (!showFullPlayer && document.querySelector('[aria-modal="true"],[role="dialog"]'))) return;
+
+      const key = event.key;
+      if (!event.shiftKey && key === '/' && !showFullPlayer) {
+        event.preventDefault();
+        if (activeTab === 'main') searchInputRef.current?.focus();
+        else { focusSearch.current = true; setActiveTab('main'); }
+        return;
+      }
+      if (!webAudioRef.current?.hasAttribute('src')) return;
+      if (key === ' ' && !event.shiftKey && !target?.closest('button,a,[role="button"],[role="switch"],[role="checkbox"]')) {
+        event.preventDefault();
+        if (!event.repeat) void mediaActions.current.toggle();
+      } else if (key === 'ArrowRight' || key === 'ArrowLeft') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          if (!event.repeat) (key === 'ArrowRight' ? mediaActions.current.next : mediaActions.current.previous)();
+        } else {
+          mediaActions.current.seek(webAudioRef.current.currentTime + (key === 'ArrowRight' ? 5 : -5));
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [compact, activeTab, showFullPlayer, showKeyboardHelp, showEqualizerModal, showQueue]);
+
   useEffect(() => {
     if (Platform.OS !== 'web' || !('mediaSession' in navigator) || !m.currentTrack) return;
     const media = navigator.mediaSession;
@@ -1018,15 +1235,10 @@ function CatalogScreen() {
     media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: track.cover_url ? [{ src: track.cover_url }] : [] });
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
       play: () => { void webAudioRef.current?.play().then(m.resumeTrack).catch(() => {}); },
-      pause: () => { webAudioRef.current?.pause(); void m.pauseTrack(); },
+      pause: () => { mediaActions.current.cancelTransition(); webAudioRef.current?.pause(); void m.pauseTrack(); },
       nexttrack: () => mediaActions.current.next(),
       previoustrack: () => mediaActions.current.previous(),
-      seekto: details => {
-        const audio = webAudioRef.current;
-        if (audio && typeof details.seekTime === 'number' && Number.isFinite(audio.duration)) {
-          audio.currentTime = Math.min(audio.duration, Math.max(0, details.seekTime));
-        }
-      },
+      seekto: details => { if (typeof details.seekTime === 'number') mediaActions.current.seek(details.seekTime); },
     };
     for (const [action, handler] of Object.entries(handlers)) {
       try { media.setActionHandler(action as MediaSessionAction, handler); } catch {}
@@ -1227,7 +1439,7 @@ function CatalogScreen() {
                 <PrimaryButton title="Очистить офлайн-кэш треков" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить офлайн-кэш.'))} />
               </View>}
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
-                <TextInput 
+                <TextInput ref={searchInputRef}
                   placeholder="Поиск треков и исполнителей..."
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
@@ -1579,13 +1791,16 @@ function CatalogScreen() {
         <View style={{ flexDirection: 'row', alignItems: 'center', width: compact ? '100%' : 260, marginTop: compact ? 0 : 8 }}>
           {m?.currentTrack ? (
             <>
-              <TrackCoverImage track={m.currentTrack} style={{ width: compact ? 38 : 54, height: compact ? 38 : 54, borderRadius: 14, marginRight: 14 }} />
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#ffffff' }}>{m.currentTrack.title}</Text>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b', marginTop: 3 }}>
-                  {formatTime(currentTime)} / {formatTime(activeDuration)}
-                </Text>
-              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Открыть полноэкранный плеер" onPress={() => setShowFullPlayer(true)}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', marginRight: 10 }}>
+                <TrackCoverImage track={m.currentTrack} style={{ width: compact ? 38 : 54, height: compact ? 38 : 54, borderRadius: 14, marginRight: 14 }} />
+                <View style={{ flex: 1 }}>
+                  <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '800', color: '#ffffff' }}>{m.currentTrack.title}</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#fa233b', marginTop: 3 }}>
+                    {formatTime(currentTime)} / {formatTime(activeDuration)}
+                  </Text>
+                </View>
+              </Pressable>
               <Pressable 
                 onPress={() => toggleAddToMyMusic(m.currentTrack)} 
                 style={{ 
@@ -1940,7 +2155,26 @@ function CatalogScreen() {
         </View>
       </Modal>
 
-      {showEqualizerModal && <EqualizerPanel close={() => setShowEqualizerModal(false)} />}
+      {showFullPlayer && m.currentTrack && <FullPlayer
+        title={m.currentTrack.title} artist={m.currentTrack.artist}
+        cover={<TrackCoverImage track={m.currentTrack} style={{ width: '100%', height: '100%' }} />}
+        time={currentTime} duration={activeDuration} playing={m.isPlaying} shuffle={isShuffle} repeat={isRepeat}
+        seek={seekTo} close={() => setShowFullPlayer(false)} previous={handlePrevious} next={handleNext} togglePlay={handleTogglePlay}
+        toggleShuffle={() => setIsShuffle(!isShuffle)} toggleRepeat={() => setIsRepeat(!isRepeat)}
+        equalizer={() => playerPanel(() => setShowEqualizerModal(true))} queue={() => playerPanel(() => setShowQueue(true))}
+        icon={(name, size, color) => <WebIcon name={name} size={size} color={color} />} />}
+
+      {showEqualizerModal && <EqualizerPanel close={() => closePlayerPanel(() => setShowEqualizerModal(false))}
+        normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade}
+        keyboardHelp={compact ? undefined : () => { setShowEqualizerModal(false); setShowKeyboardHelp(true); }} />}
+
+      {showKeyboardHelp && <CollectionPanel title="Горячие клавиши" close={() => { setShowKeyboardHelp(false); setShowEqualizerModal(true); }}>
+        {[['Пробел', 'Пауза или воспроизведение'], ['← / →', 'Перемотать на 5 секунд'], ['Shift + ← / →', 'Предыдущий или следующий трек'], ['/', 'Открыть поиск']].map(([key, action]) =>
+          <View key={key} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
+            <Text style={{ color: '#fff', backgroundColor: '#ffffff18', padding: 9, borderRadius: 8, minWidth: 95, textAlign: 'center', fontWeight: '800' }}>{key}</Text>
+            <Text style={{ color: '#eee', flex: 1 }}>{action}</Text>
+          </View>)}
+      </CollectionPanel>}
 
       {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackDetails} onRequestClose={() => setSelectedTrackDetails(null)}>
@@ -2136,7 +2370,7 @@ function CatalogScreen() {
           )}
         </View>
       </Modal>
-      {showQueue && <CollectionPanel title="Очередь «Далее»" close={() => setShowQueue(false)}>
+      {showQueue && <CollectionPanel title="Очередь «Далее»" close={() => closePlayerPanel(() => setShowQueue(false))}>
         {!nextTracks.length && <Text>Добавь трек через «Играть следующим».</Text>}
         {nextTracks.map((track, index) => <View key={track.id} style={{ gap: 6, paddingBottom: 8 }}>
           <Text numberOfLines={2} style={{ fontWeight: '800' }}>{track.title}</Text>
