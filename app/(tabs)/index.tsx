@@ -9,6 +9,8 @@ import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
 import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
 import { ArtistPanel } from '../../components/ArtistPanel';
 import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
+import { ExternalMusicSearch } from '../../components/ExternalMusicSearch';
+import { searchScore } from '../../lib/catalog-search';
 import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
@@ -283,6 +285,11 @@ function CatalogScreen() {
   }, [recentlyPlayed]);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [externalRequest, setExternalRequest] = useState<{ term: string; sequence: number } | null>(null);
+  const startExternalSearch = () => {
+    const term = searchQuery.trim();
+    if (term.length >= 2) setExternalRequest(previous => ({ term, sequence: (previous?.sequence ?? 0) + 1 }));
+  };
   const [selectedGenre, setSelectedGenre] = useState<string>('Все жанры');
 
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
@@ -485,6 +492,7 @@ function CatalogScreen() {
 
       const omitted = new Set([...hiddenTrackIds, ...(visibility.data ?? []).map(item => item.track_id)]);
       const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !omitted.has(t.id));
+      if (term.length >= 2) filtered.sort((a, b) => searchScore(term, b.title, b.artist) - searchScore(term, a.title, a.artist));
       setGlobalSearchResults(filtered);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
@@ -1179,6 +1187,9 @@ function CatalogScreen() {
                   placeholderTextColor="#8e8e93"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
+                  onSubmitEditing={startExternalSearch}
+                  returnKeyType="search"
+                  maxLength={150}
                   style={{ flex: 1, fontSize: 15, color: '#000000', outlineStyle: 'none' as any }}
                 />
                 {searchQuery.length > 0 && (
@@ -1188,6 +1199,7 @@ function CatalogScreen() {
                 )}
               </View>
 
+              <ExternalMusicSearch query={searchQuery.trim()} request={externalRequest} start={startExternalSearch} />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20, paddingVertical: 4 }}>
                 {GENRES.map((g) => {
                   const isSelected = selectedGenre === g;
@@ -1258,7 +1270,7 @@ function CatalogScreen() {
                 {audiusAuthors.map(author => <PrimaryButton key={'audius_' + author.id} title={author.name + ' · Audius'} variant="soft" onPress={() => void openAudiusArtist(author)} />)}
               </View>}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
-                {searchQuery.trim().length >= 2 ? 'Треки' : 'Рекомендуемые треки'} ({globalSearchResults.length})
+                {searchQuery.trim().length >= 2 ? 'Можно слушать в Ритме' : 'Рекомендуемые треки'} ({globalSearchResults.length})
               </Text>
 
               {isSearching && <ActivityIndicator size="small" color="#fa233b" style={{ marginVertical: 12 }} />}
