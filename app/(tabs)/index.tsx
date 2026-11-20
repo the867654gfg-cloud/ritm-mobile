@@ -348,6 +348,8 @@ function CatalogScreen() {
   const listPositions = useRef({ main: { y: 0 }, uploads: { y: 0 }, my_music: { y: 0 }, downloads: { y: 0 } });
   const [updateReady, setUpdateReady] = useState(false);
   const updatePending = useRef(false);
+  const editingInProgress = useRef(false);
+  editingInProgress.current = Boolean(editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack);
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const current = document.querySelector('meta[name="ritm-version"]')?.getAttribute('content');
@@ -780,7 +782,11 @@ function CatalogScreen() {
         if (audio !== webAudioRef.current) return;
         countPlayback(audio);
         if (playingRequest.current !== playRequest.current) return;
-        if (updatePending.current && navigator.onLine) { window.location.reload(); return; }
+        if (updatePending.current && navigator.onLine && !editingInProgress.current &&
+          window.location.pathname.replace(/\/$/, '') === basePath) {
+          window.location.reload();
+          return;
+        }
         cancelTransition();
         if (isRepeat && m.currentTrack) void safePlayTrack(m.currentTrack, undefined, playContext.current, 0, true);
         else if (queuedNext.current.length) handleNext();
