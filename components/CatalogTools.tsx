@@ -5,12 +5,16 @@ import { Field, Notice, PrimaryButton } from './AuthUI';
 import type { Track } from '../lib/music-data';
 import { supabase } from '../lib/supabase';
 import { getWebFileContentType } from '../lib/track-cover';
+import { TrackVersionPicker } from './TrackVersionPicker';
+import type { TrackVersion } from '../lib/catalog-search';
 
 export function EditTrack({ track, userId, close, onSave }: {
   track: Track; userId: string; close: () => void; onSave: (track: Track) => void;
 }) {
   const [title, setTitle] = useState(track.title);
   const [artist, setArtist] = useState(track.artist ?? '');
+  const [album, setAlbum] = useState(track.album ?? '');
+  const [version, setVersion] = useState<TrackVersion | null>(track.version_kind ?? null);
   const [description, setDescription] = useState(track.description ?? '');
   const [genre, setGenre] = useState(track.genre);
   const [picture, setPicture] = useState<File>();
@@ -33,8 +37,8 @@ export function EditTrack({ track, userId, close, onSave }: {
     setBusy(true);
     setError('');
     try {
-      const fields: { title: string; artist: string; description: string; genre: string; cover_url?: string; cover_key?: null } = {
-        title: title.trim(), artist: artist.trim(), description: description.trim(), genre: genre.trim(),
+      const fields: Pick<Track, 'title' | 'artist' | 'album' | 'version_kind' | 'description' | 'genre' | 'cover_url' | 'cover_key'> = {
+        title: title.trim(), artist: artist.trim(), album: album.trim() || null, version_kind: version, description: description.trim(), genre: genre.trim(),
       };
       if (picture) {
         const extension = await getWebFileContentType(picture);
@@ -57,8 +61,10 @@ export function EditTrack({ track, userId, close, onSave }: {
     {error && <Notice kind="error" text={error} />}
     <Field label="Название" value={title} onChangeText={setTitle} maxLength={150} />
     <Field label="Исполнитель" value={artist} onChangeText={setArtist} maxLength={100} />
+    <Field label="Альбом" value={album} onChangeText={setAlbum} maxLength={150} />
     <Field label="Жанр" value={genre} onChangeText={setGenre} maxLength={80} />
     <Field label="Описание" value={description} onChangeText={setDescription} maxLength={1000} />
+    <TrackVersionPicker value={version} onChange={setVersion} />
     {preview ? <Image resizeMode="contain" source={{ uri: preview }} style={{ width: 120, height: 120 }} /> : null}
     {typeof document !== 'undefined' && <PrimaryButton title="Заменить обложку" variant="soft" disabled={busy} onPress={() => {
       const input = document.createElement('input');

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { Platform } from 'react-native';
 import { Track } from './music-data';
 
@@ -27,6 +27,16 @@ const MusicContext = createContext<MusicContextType | null>(null);
 
 // 12 частотных полос (от глубокого баса до высоких частот)
 export const EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000, 20000];
+export const EQ_MAX_GAIN = 12;
+const clampGain = (value: number) => Number.isFinite(value) ? Math.round(Math.max(-EQ_MAX_GAIN, Math.min(EQ_MAX_GAIN, value))) : 0;
+const eqKey = 'ritm_equalizer_v1';
+function savedGains() {
+  try {
+    const values = JSON.parse(localStorage.getItem(eqKey) || 'null');
+    if (Array.isArray(values) && values.length === EQ_FREQUENCIES.length) return values.map(clampGain);
+  } catch {}
+  return EQ_FREQUENCIES.map(() => 0);
+}
 
 export const EQ_PRESETS: { [key: string]: number[] } = {
   'Flat': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -41,16 +51,32 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeedState] = useState<number>(1.0);
-  const [eqGains, setEqGains] = useState<number[]>(new Array(12).fill(0));
+  const [eqGains, setEqGains] = useState<number[]>(savedGains);
 
   // Web Audio API для эквалайзера в браузере
   const audioCtxRef = useRef<AudioContext | null>(null);
   const filtersRef = useRef<BiquadFilterNode[]>([]);
+  const inputLevelRef = useRef<GainNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const sourceElementRef = useRef<HTMLAudioElement | null>(null);
 
   // Актуальные значения полос, чтобы фильтры при создании сразу получили текущие настройки
   const eqGainsRef = useRef<number[]>(eqGains);
   eqGainsRef.current = eqGains;
+
+  function updateFilters(values: number[]) {
+    const ctx = audioCtxRef.current;
+    if (!ctx || !inputLevelRef.current) return;
+    filtersRef.current.forEach((filter, i) => filter.gain.setTargetAtTime(values[i], ctx.currentTime, 0.03));
+    const boost = Math.max(0, ...values);
+    inputLevelRef.current.gain.setTargetAtTime(10 ** (-(boost ? boost + 2 : 0) / 20), ctx.currentTime, 0.04);
+  }
+  useEffect(() => {
+    updateFilters(eqGains);
+    if (Platform.OS === 'web') {
+      try { localStorage.setItem(eqKey, JSON.stringify(eqGains)); } catch {}
+    }
+  }, [eqGains]);
 
   const attachAudioElement = (element: HTMLAudioElement) => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !element) return;
@@ -63,27 +89,35 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const ctx: AudioContext = audioCtxRef.current ?? new AudioContextClass();
         audioCtxRef.current = ctx;
 
+        sourceRef.current?.disconnect();
+        inputLevelRef.current?.disconnect();
+        filtersRef.current.forEach(filter => filter.disconnect());
         const source = ctx.createMediaElementSource(element);
+        const inputLevel = ctx.createGain();
 
         // 12 BiquadFilterNode, по одному на полосу
         const filters = EQ_FREQUENCIES.map((freq, i) => {
           const filter = ctx.createBiquadFilter();
           filter.type = 'peaking';
-          filter.frequency.value = freq;
+          filter.frequency.value = Math.min(freq, ctx.sampleRate * 0.49);
           filter.Q.value = 1.4;
           filter.gain.value = eqGainsRef.current[i] ?? 0;
           return filter;
         });
 
         // source -> f0 -> f1 -> ... -> f11 -> выход
-        source.connect(filters[0]);
+        source.connect(inputLevel);
+        inputLevel.connect(filters[0]);
         for (let i = 0; i < filters.length - 1; i++) {
           filters[i].connect(filters[i + 1]);
         }
         filters[filters.length - 1].connect(ctx.destination);
 
         filtersRef.current = filters;
+        sourceRef.current = source;
+        inputLevelRef.current = inputLevel;
         sourceElementRef.current = element;
+        updateFilters(eqGainsRef.current);
       }
 
       const ctx = audioCtxRef.current;
@@ -96,22 +130,16 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const setEqGain = (bandIndex: number, value: number) => {
+    if (!Number.isInteger(bandIndex) || bandIndex < 0 || bandIndex >= EQ_FREQUENCIES.length) return;
     setEqGains((prev) => {
       const next = [...prev];
-      next[bandIndex] = value;
+      next[bandIndex] = clampGain(value);
       return next;
     });
-
-    const filter = filtersRef.current[bandIndex];
-    if (filter) filter.gain.value = value;
   };
 
   const applyPreset = (presetGains: number[]) => {
-    setEqGains([...presetGains]);
-    presetGains.forEach((gain, idx) => {
-      const filter = filtersRef.current[idx];
-      if (filter) filter.gain.value = gain;
-    });
+    setEqGains(EQ_FREQUENCIES.map((_, index) => clampGain(presetGains[index])));
   };
 
   const resetEq = () => {

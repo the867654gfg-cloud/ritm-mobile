@@ -9,7 +9,9 @@ import { AvatarCircle, Field, PrimaryButton } from '../../components/AuthUI';
 import { CollectionPanel, EditPlaylist, TrackList } from '../../components/CollectionTools';
 import { ArtistPanel } from '../../components/ArtistPanel';
 import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
-import { searchScore } from '../../lib/catalog-search';
+import { searchScore, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
+import { BatchTrackEditor, type TrackMetadata } from '../../components/BatchTrackEditor';
+import { EqualizerPanel } from '../../components/EqualizerPanel';
 import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
@@ -134,6 +136,8 @@ function mapCloudTrack(item: any): Track {
     id: String(item.id),
     title: item.title || 'Без названия',
     artist: item.artist || '',
+    album: item.album,
+    version_kind: item.version_kind,
     genre: item.genre || '',
     duration: dur,
     url: item.audio_url || item.url || (/^audius_[A-Za-z0-9]{1,32}$/.test(item.id) ? 'https://api.audius.co/v1/tracks/' + item.id.slice(7) + '/stream?app_name=RITM_APP' : ''),
@@ -184,6 +188,7 @@ function CatalogScreen() {
   const { user: authUser, profile: authProfile, loading: authLoading, signOut } = useAuth();
   const [trackCards, setTrackCards] = useState<TrackCards>({});
   const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  const [batchTracks, setBatchTracks] = useState<Track[] | null>(null);
   const [canModerate, setCanModerate] = useState(false);
   const [showModeration, setShowModeration] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
@@ -284,6 +289,9 @@ function CatalogScreen() {
   }, [recentlyPlayed]);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [versionFilter, setVersionFilter] = useState<TrackVersion | null>(null);
+  const searchCatalog = useRef<{ tracks: Track[]; expires: number }>();
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const [selectedGenre, setSelectedGenre] = useState<string>('Все жанры');
 
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
@@ -413,7 +421,8 @@ function CatalogScreen() {
   }, [cloudUploadedTracks, globalSearchResults, myMusicTracks, selectedTrackDetails?.id]);
 
   const fetchRecommendedMusic = async (query: string, genre: string) => {
-    if (!supabase) {
+    const db = supabase;
+    if (!db) {
       setSearchError(true);
       return;
     }
@@ -430,25 +439,42 @@ function CatalogScreen() {
     try {
       const term = query.trim();
       const match = '%' + term.replace(/[\\%_*]/g, char => '\\' + char) + '%';
-      const catalog = () => {
-        const select = supabase!.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '');
-        return genre !== 'Все жанры' ? select.ilike('genre', genre) : select;
+      const localCatalog = async () => {
+        const cached = searchCatalog.current;
+        if (term.length >= 2 && cached && cached.expires > Date.now()) return cached.tracks;
+        const tracks: Track[] = [];
+        const pageSize = term.length >= 2 ? 250 : 50;
+        for (let from = 0; ; from += pageSize) {
+          const select = db.from('tracks').select('*').not('audio_url', 'is', null).neq('audio_url', '').order('id');
+          if (term.length < 2 && genre !== 'Все жанры') select.ilike('genre', genre);
+          const { data, error } = await select.range(from, from + pageSize - 1).abortSignal(controller.signal);
+          if (error) throw error;
+          tracks.push(...(data ?? []).map(mapCloudTrack));
+          if (term.length < 2 || !data || data.length < pageSize) break;
+        }
+        if (term.length >= 2 && !controller.signal.aborted) searchCatalog.current = { tracks, expires: Date.now() + 120000 };
+        return tracks;
       };
-      const [titles, performers, authors, visibility] = await Promise.all([
-        (term.length >= 2 ? catalog().ilike('title', match) : catalog()).limit(50).abortSignal(controller.signal),
-        term.length >= 2 ? catalog().ilike('artist', match).limit(50).abortSignal(controller.signal) : null,
-        term.length >= 2 ? supabase.from('profiles').select('id,username').ilike('username', match).limit(12).abortSignal(controller.signal) : null,
-        supabase.from('ritm_hidden_tracks').select('track_id').abortSignal(controller.signal),
+      const [local, authors, visibility] = await Promise.all([
+        localCatalog().catch(() => null),
+        term.length >= 2 ? db.from('profiles').select('id,username').ilike('username', match).limit(12).abortSignal(controller.signal) : null,
+        db.from('ritm_hidden_tracks').select('track_id').abortSignal(controller.signal),
       ]);
       if (controller.signal.aborted) return;
-      if (titles.error || performers?.error || authors?.error || visibility.error) failedSources++;
+      if (!local || authors?.error || visibility.error) failedSources++;
       setAuthorResults(authors?.data ?? []);
-      aggregated.push(...[...(titles.data ?? []), ...(performers?.data ?? [])].map(mapCloudTrack));
-      if (authors?.data?.length) {
-        const own = await catalog().in('user_id', authors.data.map(author => author.id)).limit(50).abortSignal(controller.signal);
-        if (controller.signal.aborted) return;
-        if (own.data) aggregated.push(...own.data.map(mapCloudTrack));
+      const matchingProfiles = new Set(authors?.data?.map(author => author.id) ?? []);
+      const omitted = new Set([...hiddenTrackIds, ...(visibility.data ?? []).map(item => item.track_id)]);
+      const score = (track: Track) => searchScore(term, track.title, track.artist, track.album ?? '', track.version_kind);
+      const localMatches = new Set<string>();
+      for (const track of local ?? []) {
+        if (genre !== 'Все жанры' && track.genre.toLowerCase() !== genre.toLowerCase()) continue;
+        if (term.length < 2 || score(track) > 0 || (track.user_id && matchingProfiles.has(track.user_id))) {
+          aggregated.push(track);
+          localMatches.add(track.id);
+        }
       }
+      if (term.length >= 2) setGlobalSearchResults(aggregated.filter(track => !omitted.has(track.id)).sort((a, b) => score(b) - score(a)));
 
       const hosts = await getAudiusHosts();
       if (controller.signal.aborted) return;
@@ -484,10 +510,11 @@ function CatalogScreen() {
         }
       });
 
-      const omitted = new Set([...hiddenTrackIds, ...(visibility.data ?? []).map(item => item.track_id)]);
       const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !omitted.has(t.id));
-      if (term.length >= 2) filtered.sort((a, b) => searchScore(term, b.title, b.artist) - searchScore(term, a.title, a.artist));
-      setGlobalSearchResults(filtered);
+      const ranked = term.length >= 2 ? filtered.map(track => ({ track, score: score(track) }))
+        .filter(item => item.score > 0 || localMatches.has(item.track.id))
+        .sort((a, b) => b.score - a.score).map(item => item.track) : filtered;
+      setGlobalSearchResults(ranked);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
       if (!controller.signal.aborted) setSearchError(true);
@@ -500,7 +527,23 @@ function CatalogScreen() {
   useEffect(() => {
     const timer = setTimeout(() => { void fetchRecommendedMusic(searchQuery, selectedGenre); }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery, selectedGenre, hiddenTrackIds]);
+  }, [searchQuery, selectedGenre, hiddenTrackIds, catalogRevision]);
+
+  const applyTrackUpdates = (updates: (Track | TrackMetadata)[]) => {
+    const byId = new Map(updates.map(track => [track.id, track]));
+    const swap = (tracks: Track[]) => tracks.map(track => {
+      const update = byId.get(track.id);
+      return update ? { ...track, ...update } : track;
+    });
+    searchCatalog.current = undefined;
+    setCloudUploadedTracks(swap);
+    setGlobalSearchResults(swap);
+    setMyMusicTracks(swap);
+    setRecentlyPlayed(swap);
+    setUserPlaylists(previous => previous.map(playlist => ({ ...playlist, tracks: swap(playlist.tracks) })));
+    setUpcoming(swap(queuedNext.current));
+    setCatalogRevision(revision => revision + 1);
+  };
 
   const openAudiusArtist = async (author: { id: string; name: string }) => {
     const request = ++openingArtist.current;
@@ -944,6 +987,7 @@ function CatalogScreen() {
     ? myMusicTracks.some(t => t.id === m.currentTrack.id) 
     : false;
 
+  const catalogResults = versionFilter ? globalSearchResults.filter(track => trackVersion(track.title, track.version_kind) === versionFilter) : globalSearchResults;
   const smartPlaylists = [
     { id: 'smart_trending', title: '🔥 Популярное', tracks: globalSearchResults.slice(0, 50), cover_url: globalSearchResults[0]?.cover_url || '' },
     { id: 'smart_recent', title: '🕒 Недавно прослушиваемые', tracks: recentlyPlayed, cover_url: recentlyPlayed[0]?.cover_url || '' },
@@ -1119,7 +1163,7 @@ function CatalogScreen() {
 
           {/* ПАНЕЛЬ СОРТИРОВКИ И МНОЖЕСТВЕННОГО ВЫБОРА */}
           {(activeTab === 'uploads' || activeTab === 'my_music') && (
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)' }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Pressable 
                   onPress={() => toggleSelectAll(activeTab === 'uploads' ? cloudUploadedTracks : myMusicTracks)}
@@ -1133,6 +1177,13 @@ function CatalogScreen() {
                   </Text>
                 </Pressable>
               </View>
+              {activeTab === 'uploads' && authUser && selectedTrackIds.length > 0 && <PrimaryButton
+                title={'Редактировать выбранные · ' + selectedTrackIds.length} variant="soft" onPress={() => {
+                  const selected = new Set(selectedTrackIds);
+                  const editable = cloudUploadedTracks.filter(track => selected.has(track.id) && track.user_id === authUser.id);
+                  if (editable.length > 500) { setNotice('Выбери до 500 треков за раз.'); return; }
+                  if (editable.length) setBatchTracks(editable);
+                }} />}
 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Text style={{ fontSize: 12, color: '#8e8e93', fontWeight: '600' }}>Сортировка:</Text>
@@ -1262,8 +1313,17 @@ function CatalogScreen() {
                 {audiusAuthors.map(author => <PrimaryButton key={'audius_' + author.id} title={author.name + ' · Audius'} variant="soft" onPress={() => void openAudiusArtist(author)} />)}
               </View>}
               <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 12 }}>
-                {searchQuery.trim().length >= 2 ? 'Можно слушать в Ритме' : 'Рекомендуемые треки'} ({globalSearchResults.length})
+                {searchQuery.trim().length >= 2 ? 'Можно слушать в Ритме' : 'Рекомендуемые треки'} ({catalogResults.length})
               </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                {([[null, 'Все версии'], ['original', 'Оригиналы'], ['remix', 'Ремиксы'], ['cover', 'Каверы'], ['other', 'Другие версии']] as [TrackVersion | null, string][]).map(([version, label]) =>
+                  <Pressable key={version ?? 'all'} accessibilityRole="button" accessibilityState={{ selected: version === versionFilter }}
+                    onPress={() => setVersionFilter(version)} style={{ padding: 8, borderRadius: 11, backgroundColor: version === versionFilter ? '#fa233b' : '#fff' }}>
+                    <Text style={{ color: version === versionFilter ? '#fff' : '#292930', fontWeight: '700' }}>{label}</Text>
+                  </Pressable>)}
+              </View>
+              {!isSearching && !searchError && catalogResults.length === 0 &&
+                <Text style={{ marginVertical: 10, color: '#62626b' }}>Совпадений в каталоге нет. Попробуй изменить запрос или фильтры.</Text>}
 
               {isSearching && <ActivityIndicator size="small" color="#fa233b" style={{ marginVertical: 12 }} />}
 
@@ -1277,18 +1337,20 @@ function CatalogScreen() {
                 </Pressable>
               )}
 
-              {globalSearchResults.map((item: Track) => {
+              {catalogResults.map((item: Track) => {
                 const isSelected = m?.currentTrack?.id === item.id;
                 return (
                   <View 
                     key={item.id} 
                     style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}
                   >
-                    <Pressable onPress={() => void safePlayTrack(item, globalSearchResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
+                    <Pressable onPress={() => void safePlayTrack(item, catalogResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
-                        <Text numberOfLines={1} style={{ fontSize: 11, color: '#686871' }}>{[item.artist, item.id.startsWith('audius_') ? 'Audius' : 'Ритм'].filter(Boolean).join(' · ')}</Text>
+                        <Text numberOfLines={1} style={{ fontSize: 11, color: '#686871' }}>{[item.artist, item.album,
+                          (item.version_kind || trackVersion(item.title) !== 'original') ? TRACK_VERSIONS[trackVersion(item.title, item.version_kind)] : '',
+                          item.id.startsWith('audius_') ? 'Audius' : 'Ритм'].filter(Boolean).join(' · ')}</Text>
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
@@ -1635,8 +1697,8 @@ function CatalogScreen() {
               <View style={{ width: `${volume * 100}%`, height: '100%', backgroundColor: '#fa233b', borderRadius: 2 }} />
             </View>
           </Pressable>
-          <Pressable 
-            onPress={() => setShowEqualizerModal(true)} 
+          <Pressable accessibilityRole="button" accessibilityLabel="Открыть эквалайзер"
+            onPress={() => setShowEqualizerModal(true)}
             style={{ 
               width: 40, 
               height: 40, 
@@ -1653,6 +1715,10 @@ function CatalogScreen() {
         </View>
       </View>
 
+      {compact && <Pressable accessibilityRole="button" accessibilityLabel="Открыть эквалайзер" onPress={() => setShowEqualizerModal(true)}
+        style={{ position: 'absolute', zIndex: 110, right: 103, bottom: 147, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 11, paddingVertical: 7 }}>
+        <Text style={{ fontWeight: '800', color: '#292930' }}>EQ</Text>
+      </Pressable>}
       <Pressable accessibilityRole="button" accessibilityLabel="Очередь воспроизведения" onPress={() => setShowQueue(true)}
         style={{ position: 'absolute', zIndex: 110, right: compact ? 14 : 24, bottom: compact ? 147 : 118, borderRadius: 14, backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 7 }}>
         <Text style={{ fontWeight: '800', color: '#292930' }}>Далее{nextTracks.length ? ' · ' + nextTracks.length : ''}</Text>
@@ -1874,110 +1940,7 @@ function CatalogScreen() {
         </View>
       </Modal>
 
-      {/* МОДАЛЬНОЕ ОКНО 12-ПОЛОСНОГО ЭКВАЛАЙЗЕРА */}
-      <Modal animationType="fade" transparent visible={showEqualizerModal}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(20px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          <View style={{ width: '100%', maxWidth: 760, backgroundColor: '#18181c', borderRadius: 28, padding: 26, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' }}>
-            
-            {/* Header */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <View>
-                <Text style={{ fontSize: 22, fontWeight: '900', color: '#ffffff' }}>12-полосный Эквалайзер</Text>
-                <Text style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>Настройка частот и скорости воспроизведения</Text>
-              </View>
-              <Pressable onPress={() => setShowEqualizerModal(false)} style={{ padding: 6, outlineStyle: 'none' as any }}>
-                <WebIcon name="close" size={22} color="#8e8e93" />
-              </Pressable>
-            </View>
-
-            {/* Скорость воспроизведения */}
-            <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 14, borderRadius: 16, marginBottom: 20 }}>
-              <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 10 }}>Скорость воспроизведения</Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                {[0.5, 0.8, 1.0, 1.25, 1.5, 2.0].map((s) => (
-                  <Pressable 
-                    key={s} 
-                    onPress={() => m?.setPlaybackSpeed?.(s)}
-                    style={{
-                      flex: 1,
-                      paddingVertical: 8,
-                      borderRadius: 10,
-                      backgroundColor: m?.playbackSpeed === s ? '#fa233b' : 'rgba(255,255,255,0.08)',
-                      alignItems: 'center',
-                      outlineStyle: 'none' as any
-                    }}
-                  >
-                    <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 13 }}>{s}x</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            {/* Пресеты */}
-            <Text style={{ fontSize: 12, fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 10 }}>Пресеты звука</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20, paddingBottom: 4 }}>
-              {['Flat', 'Bass Boost', 'Acoustic', 'Pop', 'Rock', 'Electronic'].map((preset) => (
-                <Pressable
-                  key={preset}
-                  onPress={() => {
-                    const presetValues = {
-                      'Flat': [0,0,0,0,0,0,0,0,0,0,0,0],
-                      'Bass Boost': [6,6,5,3,1,0,0,0,0,0,0,0],
-                      'Acoustic': [4,3,2,1,2,3,3,4,3,2,1,0],
-                      'Pop': [-1,2,4,5,4,1,-1,-2,-1,1,3,4],
-                      'Rock': [5,4,3,1,-1,-1,1,3,4,5,5,4],
-                      'Electronic': [5,5,3,0,-2,2,1,2,4,5,5,4]
-                    }[preset];
-                    if (presetValues && m?.applyPreset) m.applyPreset(presetValues);
-                  }}
-                  style={{
-                    paddingHorizontal: 16,
-                    paddingVertical: 8,
-                    borderRadius: 12,
-                    backgroundColor: 'rgba(255,255,255,0.08)',
-                    marginRight: 8,
-                    borderWidth: 1,
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    outlineStyle: 'none' as any
-                  }}
-                >
-                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>{preset}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            {/* 12 Частотных Полос */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 160, backgroundColor: 'rgba(0,0,0,0.3)', padding: 14, borderRadius: 16, marginBottom: 20 }}>
-              {[32, 64, 125, 250, 500, '1k', '2k', '4k', '8k', '12k', '16k', '20k'].map((freq, idx) => {
-                const gain = m?.eqGains?.[idx] || 0;
-                const heightPercent = Math.min(100, Math.max(10, ((gain + 12) / 24) * 100));
-
-                return (
-                  <View key={idx} style={{ alignItems: 'center', flex: 1 }}>
-                    <Text style={{ fontSize: 10, color: '#fa233b', fontWeight: '800', marginBottom: 6 }}>{gain > 0 ? `+${gain}` : gain}</Text>
-                    
-                    {/* Ползунок шкалы */}
-                    <View style={{ width: 8, height: 100, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 4, justifyContent: 'flex-end', overflow: 'hidden' }}>
-                      <View style={{ width: '100%', height: `${heightPercent}%`, backgroundColor: '#fa233b', borderRadius: 4 }} />
-                    </View>
-
-                    <Text style={{ fontSize: 9, color: '#8e8e93', marginTop: 8, fontWeight: '700' }}>{freq}</Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* Кнопка Сброса */}
-            <Pressable 
-              onPress={() => m?.resetEq?.()} 
-              style={{ backgroundColor: 'rgba(250, 35, 59, 0.15)', paddingVertical: 12, borderRadius: 14, alignItems: 'center', outlineStyle: 'none' as any }}
-            >
-              <Text style={{ color: '#fa233b', fontWeight: '800', fontSize: 14 }}>Сбросить настройки EQ</Text>
-            </Pressable>
-
-          </View>
-        </View>
-      </Modal>
+      {showEqualizerModal && <EqualizerPanel close={() => setShowEqualizerModal(false)} />}
 
       {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackDetails} onRequestClose={() => setSelectedTrackDetails(null)}>
@@ -1999,6 +1962,8 @@ function CatalogScreen() {
                 </View>
                 <View style={{ marginTop: 18, gap: 8 }}>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Исполнитель: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.artist || 'Неизвестен'}</Text></Text>
+                  {selectedTrackDetails.album ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Альбом: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.album}</Text></Text> : null}
+                  {selectedTrackDetails.version_kind ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Версия: <Text style={{ color: '#fff', fontWeight: '700' }}>{TRACK_VERSIONS[selectedTrackDetails.version_kind]}</Text></Text> : null}
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Опубликован: <Text style={{ color: '#fff', fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Запусков: {(playCounts[selectedTrackDetails.id]?.starts ?? 0).toLocaleString('ru-RU')}</Text>
                   <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Прослушиваний: {(playCounts[selectedTrackDetails.id]?.listens ?? 0).toLocaleString('ru-RU')}</Text>
@@ -2204,12 +2169,14 @@ function CatalogScreen() {
           void safePlayTrack(track, externalArtist.tracks, 'Автор'); setExternalArtist(null);
         }} /> : <Text>Нет доступных треков.</Text>}
       </CollectionPanel>}
+      {batchTracks && authUser && <BatchTrackEditor tracks={batchTracks} close={() => setBatchTracks(null)} onSave={updated => {
+        applyTrackUpdates(updated);
+        setSelectedTrackIds([]);
+        setBatchTracks(null);
+        setNotice('Сохранено треков: ' + updated.length + '.');
+      }} />}
       {editingTrack && authUser && <EditTrack track={editingTrack} userId={authUser.id} close={() => setEditingTrack(null)} onSave={updated => {
-        const swap = (tracks: Track[]) => tracks.map(track => track.id === updated.id ? updated : track);
-        setCloudUploadedTracks(swap);
-        setGlobalSearchResults(swap);
-        setMyMusicTracks(swap);
-        setUpcoming(swap(queuedNext.current));
+        applyTrackUpdates([updated]);
         setEditingTrack(null);
         setSelectedTrackDetails(updated);
         setNotice('Изменения сохранены.');

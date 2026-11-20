@@ -6,6 +6,8 @@ export type Track = {
   duration: number;
   genre: string;
   artist?: string;
+  album?: string | null;
+  version_kind?: import('./catalog-search').TrackVersion | null;
   /** Готовая ссылка на аудио (Audius или путь в Supabase Storage) */
   url?: string;
   /** Ссылка на аудио из таблицы tracks */

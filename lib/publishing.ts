@@ -1,10 +1,13 @@
 import { supabase } from './supabase';
+import type { TrackVersion } from './catalog-search';
 
 export type Draft = {
   id: string;
   user_id: string;
   title: string;
   artist: string;
+  album?: string | null;
+  version_kind?: TrackVersion | null;
   genre: string;
   description: string;
   duration: number;
@@ -15,7 +18,7 @@ export type Draft = {
 const PRIVATE = 'ritm-drafts';
 const PUBLIC = 'music-storage';
 
-export async function saveDraft(userId: string, fields: Pick<Draft, 'title' | 'artist' | 'genre' | 'description' | 'duration'>, audio: Blob, cover?: Blob) {
+export async function saveDraft(userId: string, fields: Pick<Draft, 'title' | 'artist' | 'album' | 'genre' | 'version_kind' | 'description' | 'duration'>, audio: Blob, cover?: Blob) {
   if (!supabase) throw new Error('Сервис загрузки недоступен.');
   const db = supabase;
   const id = crypto.randomUUID();
@@ -58,6 +61,7 @@ export async function publishDraft(draft: Draft) {
   }
   const { error } = await supabase.from('tracks').insert({
     id: draft.id, user_id: draft.user_id, title: draft.title, artist: draft.artist, genre: draft.genre,
+    album: draft.album, version_kind: draft.version_kind,
     description: draft.description, duration: draft.duration, audio_url: urls[0], cover_url: urls[1], cover_key: null,
   });
   if (error && error.code !== '23505') throw error;

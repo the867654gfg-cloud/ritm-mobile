@@ -8,6 +8,9 @@ import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { Draft, discardDraft, publishDraft, saveDraft } from '../lib/publishing';
 import { getWebFileContentType } from '../lib/track-cover';
+import { audioTags } from '../lib/audio-tags';
+import { TrackVersionPicker } from '../components/TrackVersionPicker';
+import type { TrackVersion } from '../lib/catalog-search';
 
 const limit = 50 * 1024 * 1024;
 const audioTypes: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg' };
@@ -21,6 +24,8 @@ export default function UploadScreen() {
   const [duration, setDuration] = useState(0);
   const [title, setTitle] = useState('');
   const [artist, setArtist] = useState('');
+  const [album, setAlbum] = useState('');
+  const [version, setVersion] = useState<TrackVersion | null>(null);
   const [genre, setGenre] = useState('');
   const [description, setDescription] = useState('');
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -73,13 +78,20 @@ export default function UploadScreen() {
         setCover(blob);
       }
       else {
-        setAudio(blob.slice(0, blob.size, type));
-        setDuration(0);
-        setTitle(file.name.replace(/\.[^.]+$/, '').slice(0, 150));
+        setBusy(true);
+        const sound = blob.slice(0, blob.size, type);
+        const tags = await audioTags(sound, file.name);
+        setAudio(sound);
+        setDuration(tags.duration);
+        setTitle(tags.title);
+        setArtist(tags.artist);
+        setAlbum(tags.album);
+        setGenre(tags.genre);
+        setVersion(null);
       }
     } catch (error) {
       setMessage({ kind: 'error', text: (error as Error).message });
-    }
+    } finally { setBusy(false); }
   }
 
   async function addDraftBatch() {
@@ -96,8 +108,9 @@ export default function UploadScreen() {
         try {
           const blob = file.file ?? await (await fetch(file.uri)).blob();
           if (!blob.size || blob.size > limit) { rejected++; continue; }
-          const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 150);
-          saved.push(await saveDraft(user.id, { title: name || 'Без названия', artist: '', genre: '', description: '', duration: 0 }, blob.slice(0, blob.size, type)));
+          const sound = blob.slice(0, blob.size, type);
+          const tags = await audioTags(sound, file.name);
+          saved.push(await saveDraft(user.id, { ...tags, description: '' }, sound));
         } catch { rejected++; }
       }
       setDrafts(previous => [...saved, ...previous]);
@@ -111,7 +124,7 @@ export default function UploadScreen() {
     setBusy(true);
     setMessage(undefined);
     try {
-      const fields = { title: title.trim(), artist: artist.trim(), genre: genre.trim(), description: description.trim(), duration };
+      const fields = { title: title.trim(), artist: artist.trim(), album: album.trim(), genre: genre.trim(), version_kind: version, description: description.trim(), duration };
       let draft = editing;
       if (draft) {
         const result = await supabase.from('ritm_drafts').update(fields).eq('id', draft.id).select().single();
@@ -144,6 +157,8 @@ export default function UploadScreen() {
     setCover(undefined);
     setTitle(draft.title);
     setArtist(draft.artist || '');
+    setAlbum(draft.album || '');
+    setVersion(draft.version_kind ?? null);
     setGenre(draft.genre || '');
     setDescription(draft.description || '');
     setDuration(draft.duration);
@@ -163,7 +178,7 @@ export default function UploadScreen() {
         {user && <>
           {drafts.map(draft => <PrimaryButton key={draft.id} variant="soft" title={'Черновик · ' + draft.title} disabled={busy} onPress={() => void openDraft(draft)} />)}
           {editing && <PrimaryButton title="Создать новый трек" variant="soft" disabled={busy} onPress={() => {
-            setEditing(undefined); setTitle(''); setArtist(''); setGenre(''); setDescription(''); setPreview(''); setArtwork(''); setRights(false);
+            setEditing(undefined); setTitle(''); setArtist(''); setAlbum(''); setVersion(null); setGenre(''); setDescription(''); setPreview(''); setArtwork(''); setRights(false);
           }} />}
           {!editing && <View style={{ gap: 8 }}>
             <PrimaryButton title="Выбрать аудио" disabled={busy} onPress={() => void pick(false)} />
@@ -177,7 +192,9 @@ export default function UploadScreen() {
           }} /> : null}
           <Field label="Название" value={title} onChangeText={setTitle} maxLength={150} />
           <Field label="Исполнитель" value={artist} onChangeText={setArtist} maxLength={100} />
+          <Field label="Альбом" value={album} onChangeText={setAlbum} maxLength={150} />
           <Field label="Жанр" value={genre} onChangeText={setGenre} maxLength={80} />
+          <TrackVersionPicker value={version} onChange={setVersion} />
           <Field label="Описание и теги" value={description} onChangeText={setDescription} maxLength={1000} />
           <Text>Публикуйте только записи, на распространение которых у вас есть право. Черновик доступен только вам, опубликованный трек появляется в каталоге.</Text>
           <PrimaryButton title={(rights ? '☑ ' : '☐ ') + 'У меня есть права на публикацию'} variant="soft" onPress={() => setRights(!rights)} />
