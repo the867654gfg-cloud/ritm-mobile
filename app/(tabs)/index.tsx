@@ -610,7 +610,7 @@ function CatalogScreen() {
 
       const hosts = await getAudiusHosts();
       if (controller.signal.aborted) return;
-      const host = hosts[0];
+      const host = 'https://api.audius.co';
       const searchTerm = query.trim().length >= 2 ? query.trim() : (genre !== 'Все жанры' ? genre : '');
 
       let urlsToFetch: string[] = [];
@@ -618,7 +618,10 @@ function CatalogScreen() {
         const audiusGenre = genre === 'Rap' || genre === 'Lofi' ? GENRE_ALIASES[genre][0] : genre;
         urlsToFetch = [`${host}/v1/tracks/trending?app_name=RITM_APP&limit=100&genre=${encodeURIComponent(audiusGenre)}`];
       } else if (searchTerm) {
-        urlsToFetch = [`${host}/v1/tracks/search?query=${encodeURIComponent(searchTerm)}&app_name=RITM_APP&limit=100`];
+        const offsets = term.length >= 2 ? [0, 100, 200] : [0];
+        urlsToFetch = offsets.map(offset => host + '/v1/tracks/search?' + new URLSearchParams({
+          query: searchTerm, app_name: 'RITM_APP', limit: '100', offset: String(offset),
+        }));
       } else {
         urlsToFetch = [
           `${host}/v1/tracks/trending?app_name=RITM_APP&limit=100`,
@@ -626,10 +629,24 @@ function CatalogScreen() {
         ];
       }
 
+      async function fetchAudius(url: string) {
+        const path = new URL(url);
+        for (const origin of new Set([host, ...hosts.slice(0, 1)])) {
+          if (controller.signal.aborted) return null;
+          try {
+            const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
+            const response = await fetch(new URL(path.pathname + path.search, origin), { signal });
+            if (response.ok) {
+              const result = await response.json();
+              if (Array.isArray(result.data)) return result;
+            }
+          } catch {}
+        }
+        return null;
+      }
       const [responses, accountResults] = await Promise.all([
-        Promise.all(urlsToFetch.map(u => fetch(u, { signal: controller.signal }).then(r => r.json()).catch(() => null))),
-        term.length >= 2 ? fetch(host + '/v1/users/search?query=' + encodeURIComponent(term) + '&limit=8&app_name=RITM_APP', { signal: controller.signal })
-          .then(r => r.ok ? r.json() : null).catch(() => null) : null,
+        Promise.all(urlsToFetch.map(fetchAudius)),
+        term.length >= 2 ? fetchAudius(host + '/v1/users/search?query=' + encodeURIComponent(term) + '&limit=8&app_name=RITM_APP') : null,
       ]);
       
       if (controller.signal.aborted) return;
@@ -639,7 +656,7 @@ function CatalogScreen() {
 
       responses.forEach((res) => {
         if (res && res.data && Array.isArray(res.data)) {
-          const items = res.data.map((item: any) => mapAudiusTrack(item, host))
+          const items = res.data.filter((item: any) => item.is_streamable !== false && !item.is_unlisted && !item.stream_conditions).map((item: any) => mapAudiusTrack(item, host))
             .filter((track: Track) => matchesGenre(track.genre));
           aggregated.push(...items);
         }
