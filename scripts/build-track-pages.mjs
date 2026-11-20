@@ -104,6 +104,10 @@ for (let offset = 0; ; offset += 500) {
   endpoint.searchParams.set('limit', '500');
   endpoint.searchParams.set('offset', String(offset));
   const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(20000) });
+  if (response.status === 402) {
+    console.warn('Catalogue temporarily unavailable (HTTP 402); using the app shell for track links.');
+    break;
+  }
   if (!response.ok) throw new Error('Catalogue request returned HTTP ' + response.status);
   const batch = await response.json();
   tracks.push(...batch.filter(track => safeId.test(track.id)));
