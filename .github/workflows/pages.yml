@@ -38,7 +38,13 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx expo export --platform web
-      - run: node scripts/build-track-pages.mjs
+      - name: Build track pages
+        run: |
+          for attempt in 1 2 3; do
+            if node scripts/build-track-pages.mjs; then exit 0; fi
+            sleep 3
+          done
+          exit 1
       - name: Prepare web output
         run: |
           cp dist/index.html dist/404.html
