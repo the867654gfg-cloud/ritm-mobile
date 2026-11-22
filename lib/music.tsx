@@ -7,6 +7,8 @@ interface MusicContextType {
   currentTrack: Track | null;
   isPlaying: boolean;
   playbackSpeed: number;
+  eqEnabled: boolean;
+  setEqEnabled: (enabled: boolean) => void;
   eqGains: number[]; // 12 полос
   playTrack: (track: Track, queueIds?: string[], context?: string) => Promise<Track | void>;
   pauseTrack: () => Promise<void>;
@@ -57,15 +59,17 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeedState] = useState<number>(1.0);
+  const [eqEnabled, setEqEnabled] = useState(true);
   const [eqGains, setEqGains] = useState<number[]>(savedGains);
 
   const graph = useRef<BrowserAudio>();
+  const activeEqGains = eqEnabled ? eqGains : EQ_PRESETS.Flat;
   useEffect(() => {
-    graph.current?.setEqualizer(eqGains);
+    graph.current?.setEqualizer(activeEqGains);
     if (Platform.OS === 'web') {
       try { localStorage.setItem(eqKey, JSON.stringify(eqGains)); } catch {}
     }
-  }, [eqGains]);
+  }, [eqGains, activeEqGains]);
 
   const attachAudioElement = (element: HTMLAudioElement, volume: number, wake = true) => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !element) return;
@@ -75,7 +79,7 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const mixer = graph.current ??= new BrowserAudio(new AudioContextClass(), EQ_FREQUENCIES);
       mixer.attach(element);
       mixer.setVolume(volume);
-      mixer.setEqualizer(eqGains);
+      mixer.setEqualizer(activeEqGains);
       element.volume = 1;
       if (wake) mixer.wake();
       return mixer;
@@ -124,6 +128,8 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       currentTrack,
       isPlaying,
       playbackSpeed,
+      eqEnabled,
+      setEqEnabled,
       eqGains,
       playTrack,
       pauseTrack,
@@ -148,6 +154,8 @@ export const useMusic = () => {
       currentTrack: null,
       isPlaying: false,
       playbackSpeed: 1.0,
+      eqEnabled: false,
+      setEqEnabled: () => {},
       eqGains: new Array(12).fill(0),
       playTrack: async () => {},
       pauseTrack: async () => {},

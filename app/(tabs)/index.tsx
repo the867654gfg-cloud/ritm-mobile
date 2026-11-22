@@ -1,3 +1,4 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { readableTrackText } from '../../lib/track-text';
 import { DragRow, moved } from '../../components/DragRow';
 import { UploadForm } from '../../components/UploadForm';
@@ -5,7 +6,7 @@ import { RememberedScroll } from '../../components/RememberedScroll';
 import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
 import { createContext, useContext, useState, useRef, useMemo, useEffect, useCallback } from 'react';
-import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
+import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions, useColorScheme, type GestureResponderEvent } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { useMusic } from '../../lib/music';
 import { Track } from '../../lib/music-data';
@@ -18,7 +19,6 @@ import { EditTrack, ModerationPanel } from '../../components/CatalogTools';
 import { searchScore, splitTrackTitle, TRACK_VERSIONS, trackVersion, type TrackVersion } from '../../lib/catalog-search';
 import { BatchTrackEditor, type TrackMetadata } from '../../components/BatchTrackEditor';
 import { EqualizerPanel } from '../../components/EqualizerPanel';
-import { TrackQuality } from '../../components/TrackQuality';
 import { FullPlayer } from '../../components/FullPlayer';
 import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
@@ -280,7 +280,45 @@ function CatalogScreen() {
   const [showEqualizerModal, setShowEqualizerModal] = useState(false);
   const [showFullPlayer, setShowFullPlayer] = useState(false);
   const returnToFullPlayer = useRef(false);
-  const [selectedTrackMenu, setSelectedTrackMenu] = useState<{ track: Track; source: 'network' | 'my_music' | 'uploads' } | null>(null);
+  const [selectedTrackMenu, setSelectedTrackMenu] = useState<{
+    track: Track;
+    source: 'network' | 'my_music' | 'uploads';
+    placement: { left: number; top?: number; bottom?: number; width: number; maxHeight: number };
+  } | null>(null);
+  const [recommendationTrack, setRecommendationTrack] = useState<Track | null>(null);
+  const darkPanel = useColorScheme() === 'dark';
+  const panel = darkPanel
+    ? { surface: '#261d25', border: '#55414d', text: '#fff', muted: '#d2c4cb', selected: '#501726', accent: '#ff7185' }
+    : { surface: '#fff', border: '#e6dfe7', text: '#1c1c1e', muted: '#69616e', selected: '#ffedf0', accent: '#c61835' };
+  const openTrackMenu = (event: GestureResponderEvent, track: Track, source: 'network' | 'my_music' | 'uploads') => {
+    if (Platform.OS !== 'web') return;
+    const anchor = (event.currentTarget as unknown as HTMLElement).getBoundingClientRect();
+    const margin = 12;
+    const width = Math.min(250, window.innerWidth - margin * 2);
+    const above = anchor.top - margin - 5;
+    const below = window.innerHeight - anchor.bottom - margin - 5;
+    const showBelow = below >= 280 || below >= above;
+    setShowPlaylistSelector(false);
+    setSelectedTrackMenu({ track, source, placement: {
+      width,
+      left: Math.max(margin, Math.min(anchor.right - width, window.innerWidth - width - margin)),
+      maxHeight: Math.max(0, Math.min(320, showBelow ? below : above)),
+      ...(showBelow ? { top: anchor.bottom + 5 } : { bottom: window.innerHeight - anchor.top + 5 }),
+    } });
+  };
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !selectedTrackMenu) return;
+    const dismiss = () => setSelectedTrackMenu(null);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
+    };
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('keydown', escape);
+    };
+  }, [selectedTrackMenu]);
   const [selectedTrackDetails, setSelectedTrackDetails] = useState<Track | null>(null);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
   const [selectedPlaylistModal, setSelectedPlaylistModal] = useState<{ id?: string; title: string; tracks: Track[]; cover?: string; description?: string; author_id?: string } | null>(null);
@@ -1351,11 +1389,11 @@ function CatalogScreen() {
     }).slice(0, 20), cover_url: '' },
   ], [globalSearchResults, recentlyPlayed, myMusicTracks]);
 
-  const suggestions = useMemo(() => selectedTrackDetails ? harmonicMatches(
-    selectedTrackDetails,
+  const suggestions = useMemo(() => recommendationTrack ? harmonicMatches(
+    recommendationTrack,
     [...new Map([...globalSearchResults, ...cloudUploadedTracks, ...myMusicTracks].map(track => [track.id, track])).values()],
     track => ({ ...trackCards[track.id]?.music, ...track.music }),
-  ) : [], [selectedTrackDetails, trackCards, globalSearchResults, cloudUploadedTracks, myMusicTracks]);
+  ) : [], [recommendationTrack, trackCards, globalSearchResults, cloudUploadedTracks, myMusicTracks]);
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
 
   const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition });
@@ -1388,6 +1426,106 @@ function CatalogScreen() {
       navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
     }
   }, [m.currentTrack?.id, m.isPlaying]);
+
+  const renderTrackMenu = () => {
+    if (!selectedTrackMenu) return null;
+    const { track, source, placement } = selectedTrackMenu;
+    const bulk = selectedTrackIds.length > 1;
+    const favorite = myMusicTracks.some(item => item.id === track.id);
+    const close = () => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); };
+    const item = (label: string, icon: React.ComponentProps<typeof Ionicons>['name'], action: () => void, danger = false) => (
+      <Pressable accessibilityRole="menuitem" accessibilityLabel={label} onPress={action}
+        style={({ pressed }) => ({
+          minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 10, paddingVertical: 8,
+          borderRadius: 7, backgroundColor: pressed ? panel.selected : 'transparent',
+        })}>
+        <Ionicons name={icon} size={17} color={danger ? panel.accent : panel.muted} />
+        <Text style={{ flex: 1, color: danger ? panel.accent : panel.text, fontSize: 14, fontWeight: '600' }}>{label}</Text>
+      </Pressable>
+    );
+    return (
+      <View style={{ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 200 } as any}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Закрыть меню трека" onPress={close}
+          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />
+        <View accessibilityRole="menu" accessibilityLabel={'Действия для ' + track.title} style={{
+          position: 'absolute', ...placement, borderRadius: 13, borderWidth: 1,
+          backgroundColor: panel.surface, borderColor: panel.border,
+          shadowColor: '#000', shadowOpacity: 0.24, shadowRadius: 14, shadowOffset: { width: 0, height: 5 },
+        }}>
+          <ScrollView style={{ maxHeight: placement.maxHeight, flexGrow: 0 }} contentContainerStyle={{ padding: 4 }}>
+            {showPlaylistSelector ? <>
+              {item('Назад', 'chevron-back', () => setShowPlaylistSelector(false))}
+              {userPlaylists.map(playlist => <View key={playlist.id}>
+                {item(playlist.title, 'list-outline', () => {
+                  close();
+                  if (bulk) void handleBatchAddToPlaylist(playlist.id);
+                  else void handleAddTrackToPlaylist(playlist.id, track);
+                })}
+              </View>)}
+            </> : <>
+              {item('О треке', 'information-circle-outline', () => { close(); setSelectedTrackDetails(track); })}
+              {source === 'uploads' && track.user_id === authUser?.id && !bulk &&
+                item('Редактировать трек', 'create-outline', () => { close(); setEditingTrack(track); })}
+              {item(bulk ? 'Добавить выбранные в плейлист' : 'Добавить в плейлист', 'add-outline', () => {
+                if (!authUser) { close(); router.push('/sign-in'); }
+                else if (!userPlaylists.length) { close(); setShowCreatePlaylistModal(true); }
+                else setShowPlaylistSelector(true);
+              })}
+              {item(bulk ? 'Добавить выбранные в избранное' : favorite ? 'Убрать из избранного' : 'Добавить в избранное',
+                favorite && !bulk ? 'heart-dislike-outline' : 'heart-outline', () => {
+                  close();
+                  if (bulk) void handleBatchAddToMyMusic();
+                  else void toggleAddToMyMusic(track);
+                })}
+              {track.user_id && item('Страница автора', 'person-outline', () => { close(); setArtistId(track.user_id!); })}
+              {authUser && track.url?.includes('/storage/v1/object/public/music-storage/') &&
+                !downloadIds.includes(track.id) && !offlineList.some(saved => saved.id === track.id) &&
+                item('Скачать', 'download-outline', () => {
+                  close();
+                  setDownloadIds(ids => [...ids, track.id]);
+                  void rememberOffline(track).then(() => {
+                    setOfflineList(offlineTracks()); setNotice('Трек сохранён для офлайна.');
+                  }).catch(error => setNotice(error.message || 'Не удалось сохранить трек.'))
+                    .finally(() => setDownloadIds(ids => ids.filter(id => id !== track.id)));
+                })}
+              {(track.music || trackCards[track.id]?.music) &&
+                item('По темпу и тональности', 'musical-notes-outline', () => { close(); setRecommendationTrack(track); })}
+              {item('Пожаловаться', 'flag-outline', () => {
+                close();
+                if (!authUser) { router.push('/sign-in'); return; }
+                setReportTrack(track); setReason('');
+              })}
+              {playlistMenu && selectedPlaylistModal?.id === playlistMenu.playlistId &&
+                userPlaylists.some(playlist => playlist.id === playlistMenu.playlistId && playlist.tracks.some(entry => entry.id === track.id)) &&
+                item('Удалить из плейлиста', 'trash-outline', () => {
+                  const target = playlistMenu;
+                  if (!supabase || !authUser || savingOrder) return;
+                  close();
+                  setSavingOrder(true);
+                  void (async () => {
+                    try {
+                      const { error } = await supabase!.from('user_playlist_tracks').delete()
+                        .eq('playlist_id', target.playlistId).eq('track_id', target.trackId).eq('user_id', authUser.id);
+                      if (error) throw error;
+                      const keep = (entry: Track) => entry.id !== target.trackId;
+                      setSelectedPlaylistModal(current => current?.id === target.playlistId ? { ...current, tracks: current.tracks.filter(keep) } : current);
+                      setUserPlaylists(items => items.map(playlist => playlist.id === target.playlistId ? { ...playlist, tracks: playlist.tracks.filter(keep) } : playlist));
+                      setPlaylistMenu(null);
+                    } catch { setNotice('Не удалось удалить трек из плейлиста.'); }
+                    finally { setSavingOrder(false); }
+                  })();
+                }, true)}
+              {source !== 'network' && item(selectedTrackIds.length ? 'Удалить выбранные' : 'Удалить', 'trash-outline', () => {
+                close();
+                if (selectedTrackIds.length) void handleBatchRemove(source);
+                else void handleRemoveTrack(track, source);
+              }, true)}
+            </>}
+          </ScrollView>
+        </View>
+      </View>
+    );
+  };
 
   return (
     <TrackCardsContext.Provider value={trackCards}>
@@ -1704,8 +1842,8 @@ function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека ' + item.title}
-                      onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'network' }); }} 
+                    <Pressable
+                      accessibilityRole="button" accessibilityLabel={'Действия для ' + item.title} onPress={event => openTrackMenu(event, item, 'network')}
                       style={{ 
                         padding: 8,
                         zIndex: 10,
@@ -1757,8 +1895,8 @@ function CatalogScreen() {
                       </View>
                     </Pressable>
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                    <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека ' + item.title}
-                      onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'uploads' }); }} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
+                    <Pressable
+                      accessibilityRole="button" accessibilityLabel={'Действия для ' + item.title} onPress={event => openTrackMenu(event, item, 'uploads')} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
                       <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                     </Pressable>
                   </View></DragRow>
@@ -1859,7 +1997,7 @@ function CatalogScreen() {
                         </View>
                       </Pressable>
                       <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
-                      <Pressable onPress={() => { setShowPlaylistSelector(false); setSelectedTrackMenu({ track: item, source: 'my_music' }); }} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={'Действия для ' + item.title} onPress={event => openTrackMenu(event, item, 'my_music')} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
                         <WebIcon name="ellipsis-vertical" size={18} color="#1c1c1e" />
                       </Pressable>
                     </View>
@@ -2231,9 +2369,9 @@ function CatalogScreen() {
                         <Text numberOfLines={1} style={{ fontSize: 12, color: '#7b8591', marginTop: 3 }}>{track.artist || 'Неизвестный исполнитель'}</Text>
                       </Pressable>
                       <Text style={{ fontSize: 12, color: '#7b8591' }}>{formatTime(track.duration)}</Text>
-                      <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека плейлиста ' + track.title} onPress={() => {
+                      <Pressable accessibilityRole="button" accessibilityLabel={'Меню трека плейлиста ' + track.title} onPress={event => {
                         setPlaylistMenu(selectedPlaylistModal.id ? { playlistId: selectedPlaylistModal.id, trackId: track.id } : null);
-                        setSelectedTrackIds([]); setShowPlaylistSelector(false); setSelectedTrackMenu({ track, source: 'network' });
+                        setSelectedTrackIds([]); openTrackMenu(event, track, 'network');
                       }} style={{ padding: 8 }}><WebIcon name="ellipsis-vertical" size={18} color="#747b85" /></Pressable>
                     </View>
                     {isCurrentPlaying && <div onClick={event => event.stopPropagation()} draggable={false} onDragStart={event => event.stopPropagation()} style={{ display: 'flex', gap: 14, paddingLeft: 60, marginTop: 2 }}>
@@ -2247,6 +2385,7 @@ function CatalogScreen() {
               )}
             </ScrollView>
           </View>
+          {renderTrackMenu()}
         </View>
       </Modal>
 
@@ -2262,208 +2401,41 @@ function CatalogScreen() {
       {showEqualizerModal && <EqualizerPanel close={() => closePlayerPanel(() => setShowEqualizerModal(false))}
         normalization={normalization} setNormalization={setNormalization} crossfade={crossfade} setCrossfade={setCrossfade} />}
 
-      {/* МЕНЮ ДЕЙСТВИЙ С ТРЕКОМ */}
       <Modal animationType="fade" transparent visible={!!selectedTrackDetails} onRequestClose={() => setSelectedTrackDetails(null)}>
         {selectedTrackDetails && (
-          <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.62)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-            <ScrollView style={{ width: '100%', maxWidth: 430, maxHeight: '94%', backgroundColor: 'rgba(28,28,35,0.78)', backdropFilter: 'blur(24px)' as any, borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.13)' }}>
-              <View style={{ height: 190, backgroundColor: '#292930', justifyContent: 'center', alignItems: 'center' }}>
-                <TrackCoverImage track={selectedTrackDetails} style={{ width: '100%', height: '100%' }} />
-                <Pressable onPress={() => setSelectedTrackDetails(null)} style={{ position: 'absolute', top: 14, right: 14, padding: 8, backgroundColor: 'rgba(0,0,0,0.42)', borderRadius: 18 }}>
-                  <WebIcon name="close" size={20} color="#fff" />
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <Pressable accessibilityElementsHidden onPress={() => setSelectedTrackDetails(null)}
+              style={{ position: 'absolute', top: 0, right: 0, left: 0, bottom: 0, backgroundColor: '#10101670' }} />
+            <View style={{ width: '100%', maxWidth: 360, padding: 16, gap: 14, borderRadius: 19,
+              borderWidth: 1, borderColor: panel.border, backgroundColor: panel.surface }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <TrackCoverImage track={selectedTrackDetails} style={{ width: 64, height: 64, borderRadius: 11 }} />
+                <View style={{ flex: 1 }}>
+                  <Text accessibilityRole="header" numberOfLines={2} style={{ color: panel.text, fontSize: 17, fontWeight: '800' }}>{selectedTrackDetails.title}</Text>
+                  <Text numberOfLines={1} style={{ color: panel.muted, fontSize: 13, marginTop: 3 }}>{selectedTrackDetails.artist || 'Неизвестный исполнитель'}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Закрыть сведения о треке"
+                  onPress={() => setSelectedTrackDetails(null)} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="close" color={panel.muted} size={19} />
                 </Pressable>
               </View>
-              <View style={{ padding: 20 }}>
-                <Text style={{ fontSize: 22, fontWeight: '900', color: '#fff' }} numberOfLines={2}>{selectedTrackDetails.title}</Text>
-                <Text style={{ fontSize: 14, color: '#c5c5cb', marginTop: 5 }} numberOfLines={1}>{selectedTrackDetails.artist || 'Неизвестный исполнитель'}</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
-                  <View style={{ backgroundColor: 'rgba(250,35,59,0.18)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 }}><Text style={{ color: '#ff7887', fontWeight: '700', fontSize: 12 }}>{selectedTrackDetails.genre || 'Без жанра'}</Text></View>
-                  <View style={{ backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 }}><Text style={{ color: '#d4d4d8', fontWeight: '700', fontSize: 12 }}>{formatTime(selectedTrackDetails.duration)}</Text></View>
-                </View>
-                <View style={{ marginTop: 18, gap: 8 }}>
-                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Исполнитель: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.artist || 'Неизвестен'}</Text></Text>
-                  <TrackQuality key={selectedTrackDetails.id} track={selectedTrackDetails} measured={trackCards[selectedTrackDetails.id]?.quality} />
-                  {selectedTrackDetails.album ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Альбом: <Text style={{ color: '#fff', fontWeight: '700' }}>{selectedTrackDetails.album}</Text></Text> : null}
-                  {selectedTrackDetails.version_kind ? <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Версия: <Text style={{ color: '#fff', fontWeight: '700' }}>{TRACK_VERSIONS[selectedTrackDetails.version_kind]}</Text></Text> : null}
-                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Опубликован: <Text style={{ color: '#fff', fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
-                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Запусков: {(playCounts[selectedTrackDetails.id]?.starts ?? 0).toLocaleString('ru-RU')}</Text>
-                  <Text style={{ color: '#a1a1aa', fontSize: 13 }}>Прослушиваний: {(playCounts[selectedTrackDetails.id]?.listens ?? 0).toLocaleString('ru-RU')}</Text>
-                </View>
-                <Pressable onPress={() => { void safePlayTrack(selectedTrackDetails); setSelectedTrackDetails(null); }} style={{ marginTop: 20, backgroundColor: '#fa233b', paddingVertical: 13, borderRadius: 14, alignItems: 'center' }}>
-                  <Text style={{ color: '#fff', fontWeight: '900' }}>Слушать</Text>
-                </Pressable>
-                <View style={{ gap: 8, marginTop: 12 }}>
-                  {selectedTrackDetails.description ? <Text style={{ color: '#eee' }}>{selectedTrackDetails.description}</Text> : null}
-                  <PrimaryButton variant="soft" title="Добавить в плейлист" onPress={() => {
-                    setSelectedTrackMenu({ track: selectedTrackDetails, source: 'network' });
-                    setSelectedTrackDetails(null);
-                    setShowPlaylistSelector(true);
-                    setSelectedTrackIds([]);
-                  }} />
-                  {selectedTrackDetails.user_id && <PrimaryButton variant="soft" title="Страница автора" onPress={() => {
-                    setArtistId(selectedTrackDetails.user_id!); setSelectedTrackDetails(null);
-                  }} />}
-                  {Platform.OS === 'web' && authUser && selectedTrackDetails.url?.includes('/storage/v1/object/public/music-storage/') && <PrimaryButton variant="soft" disabled={downloadIds.includes(selectedTrackDetails.id) || offlineList.some(track => track.id === selectedTrackDetails.id)} title={downloadIds.includes(selectedTrackDetails.id) ? 'Скачивается…' : offlineList.some(track => track.id === selectedTrackDetails.id) ? 'Скачано' : 'Скачать'} onPress={() => {
-                    setDownloadIds(ids => [...ids, selectedTrackDetails.id]);
-                    void rememberOffline(selectedTrackDetails).then(() => {
-                      setOfflineList(offlineTracks()); setSelectedTrackDetails(null); setNotice('Трек сохранён для офлайна.');
-                    }).catch(error => { setSelectedTrackDetails(null); setNotice(error.message || 'Не удалось сохранить трек.'); }).finally(() => setDownloadIds(ids => ids.filter(id => id !== selectedTrackDetails.id)));
-                  }} />}
-                  <PrimaryButton variant="soft" title="Пожаловаться" onPress={() => {
-                    setSelectedTrackDetails(null);
-                    if (!authUser) { router.push('/sign-in'); return; }
-                    setReportTrack(selectedTrackDetails); setReason('');
-                  }} />
-                  {suggestions.length > 0 && <>
-                    <Text style={{ color: '#fff', fontWeight: '800' }}>По темпу и тональности</Text>
-                    {suggestions.map(({ track, bpm, key }) => <PrimaryButton key={track.id} variant="soft"
-                      title={track.title + ' · ' + Math.round(bpm) + ' BPM · ' + key}
-                      onPress={() => { void safePlayTrack(track); setSelectedTrackDetails(null); }} />)}
-                  </>}
-                  {selectedTrackDetails.genre && globalSearchResults.some(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre) ? <>
-                    <Text style={{ color: '#fff', fontWeight: '800' }}>Похожие треки</Text>
-                    <TrackList tracks={globalSearchResults.filter(track => track.id !== selectedTrackDetails.id && track.genre === selectedTrackDetails.genre).slice(0, 4)} play={track => {
-                      void safePlayTrack(track); setSelectedTrackDetails(null);
-                    }} />
-                  </> : null}
-                </View>
+              <View style={{ borderTopWidth: 1, borderColor: panel.border, paddingTop: 10, gap: 6 }}>
+                <Text style={{ color: panel.muted, fontSize: 13 }}>Опубликован: <Text style={{ color: panel.text, fontWeight: '700' }}>{formatDate(selectedTrackDetails.published_at || selectedTrackDetails.created_at)}</Text></Text>
+                <Text style={{ color: panel.muted, fontSize: 13 }}>Прослушиваний: <Text style={{ color: panel.text, fontWeight: '700' }}>{(playCounts[selectedTrackDetails.id]?.listens ?? 0).toLocaleString('ru-RU')}</Text></Text>
               </View>
-            </ScrollView>
+            </View>
           </View>
         )}
       </Modal>
 
-      <Modal animationType="fade" transparent visible={!!selectedTrackMenu}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(10, 10, 15, 0.4)', backdropFilter: 'blur(16px)' as any, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-          {selectedTrackMenu && (
-            <View style={{ 
-              width: '100%', 
-              maxWidth: 340, 
-              backgroundColor: 'rgba(40, 40, 50, 0.95)', 
-              borderRadius: 24, 
-              padding: 20, 
-              borderWidth: 1, 
-              borderColor: 'rgba(255, 255, 255, 0.15)'
-            }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <Text style={{ fontSize: 15, fontWeight: '800', color: '#ffffff', flex: 1 }} numberOfLines={1}>
-                  {selectedTrackIds.length > 1 ? `Выбрано треков: ${selectedTrackIds.length}` : selectedTrackMenu.track.title}
-                </Text>
-                <Pressable onPress={() => { setSelectedTrackMenu(null); setShowPlaylistSelector(false); }} style={{ outlineStyle: 'none' as any }}>
-                  <WebIcon name="close" size={20} color="#a1a1a6" />
-                </Pressable>
-              </View>
+      {!selectedPlaylistModal && renderTrackMenu()}
+      {recommendationTrack && <CollectionPanel title="По темпу и тональности" close={() => setRecommendationTrack(null)}>
+        {suggestions.length ? suggestions.map(({ track, bpm, key }) => <PrimaryButton key={track.id} variant="soft"
+          title={track.title + ' · ' + Math.round(bpm) + ' BPM · ' + key}
+          onPress={() => { void safePlayTrack(track); setRecommendationTrack(null); }} />)
+          : <Text>Подходящих треков пока нет.</Text>}
+      </CollectionPanel>}
 
-              <Pressable
-                onPress={() => { setSelectedTrackDetails(selectedTrackMenu.track); setSelectedTrackMenu(null); setShowPlaylistSelector(false); }}
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
-              >
-                <Text style={{ color: '#fff', fontSize: 19, width: 20, textAlign: 'center' }}>i</Text>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#fff', marginLeft: 12 }}>О треке</Text>
-              </Pressable>
-              {selectedTrackMenu.source === 'uploads' && selectedTrackMenu.track.user_id === authUser?.id && selectedTrackIds.length < 2 &&
-                <PrimaryButton variant="soft" title="Редактировать трек" onPress={() => { setEditingTrack(selectedTrackMenu.track); setSelectedTrackMenu(null); }} />}
-
-              <Pressable 
-                onPress={() => setShowPlaylistSelector(!showPlaylistSelector)} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
-              >
-                <WebIcon name="add-outline" size={20} color="#ffffff" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12, flex: 1 }}>
-                  {selectedTrackIds.length > 1 ? `Добавить выбранные в плейлист` : 'Добавить в плейлист'}
-                </Text>
-                {userPlaylists.length > 0 && (
-                  <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{showPlaylistSelector ? '▲' : '▼'}</Text>
-                )}
-              </Pressable>
-
-              {showPlaylistSelector && userPlaylists.length > 0 && (
-                <View style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)', borderRadius: 12, padding: 8, marginVertical: 6, gap: 4 }}>
-                  {userPlaylists.map((pl) => (
-                    <Pressable 
-                      key={pl.id} 
-                      onPress={() => {
-                        if (selectedTrackIds.length > 1) {
-                          handleBatchAddToPlaylist(pl.id);
-                        } else {
-                          handleAddTrackToPlaylist(pl.id, selectedTrackMenu.track);
-                        }
-                      }}
-                      style={({ pressed }) => ({
-                        paddingVertical: 8,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        backgroundColor: pressed ? 'rgba(250, 35, 59, 0.3)' : 'rgba(255, 255, 255, 0.06)',
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        outlineStyle: 'none' as any
-                      })}
-                    >
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#ffffff' }} numberOfLines={1}>📚 {pl.title}</Text>
-                      <Text style={{ fontSize: 11, color: '#a1a1a6' }}>{pl.tracks.length} тр.</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-              {showPlaylistSelector && userPlaylists.length === 0 && <PrimaryButton variant="soft" title={authUser ? 'Создать плейлист' : 'Войти'} onPress={() => {
-                setSelectedTrackMenu(null); setShowPlaylistSelector(false);
-                if (authUser) setShowCreatePlaylistModal(true);
-                else router.push('/sign-in');
-              }} />}
-
-              <Pressable 
-                onPress={() => {
-                  if (selectedTrackIds.length > 1) {
-                    handleBatchAddToMyMusic();
-                  } else {
-                    void toggleAddToMyMusic(selectedTrackMenu.track);
-                    setSelectedTrackMenu(null);
-                  }
-                }} 
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', outlineStyle: 'none' as any }}
-              >
-                <WebIcon name="heart-outline" size={20} color="#fa233b" />
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#ffffff', marginLeft: 12 }}>
-                  {selectedTrackIds.length > 1 ? 'Добавить выбранные в Мою музыку' : 'Добавить в мою музыку'}
-                </Text>
-              </Pressable>
-
-              {playlistMenu && selectedPlaylistModal?.id === playlistMenu.playlistId && userPlaylists.some(item => item.id === playlistMenu.playlistId && item.tracks.some(track => track.id === selectedTrackMenu.track.id)) && <PrimaryButton title="Удалить из плейлиста" variant="danger-outline" onPress={async () => {
-                const target = playlistMenu;
-                if (!supabase || !authUser || savingOrder) return;
-                setSavingOrder(true);
-                try {
-                  const { error } = await supabase.from('user_playlist_tracks').delete().eq('playlist_id', target.playlistId).eq('track_id', target.trackId).eq('user_id', authUser.id);
-                  if (error) throw error;
-                  const keep = (track: Track) => track.id !== target.trackId;
-                  setSelectedPlaylistModal(current => current?.id === target.playlistId ? { ...current, tracks: current.tracks.filter(keep) } : current);
-                  setUserPlaylists(items => items.map(item => item.id === target.playlistId ? { ...item, tracks: item.tracks.filter(keep) } : item));
-                  setSelectedTrackMenu(null); setPlaylistMenu(null);
-                } catch { setNotice('Не удалось удалить трек из плейлиста.'); }
-                finally { setSavingOrder(false); }
-              }} />}
-              {(selectedTrackMenu.source === 'my_music' || selectedTrackMenu.source === 'uploads') && (
-                <Pressable 
-                  onPress={() => {
-                    if (selectedTrackIds.length > 0) {
-                      if (selectedTrackMenu.source !== 'network') void handleBatchRemove(selectedTrackMenu.source);
-                    } else {
-                      if (selectedTrackMenu.source !== 'network') void handleRemoveTrack(selectedTrackMenu.track, selectedTrackMenu.source);
-                    }
-                  }} 
-                  style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, outlineStyle: 'none' as any }}
-                >
-                  <WebIcon name="trash-outline" size={20} color="#fa233b" />
-                  <Text style={{ fontSize: 14, fontWeight: '600', color: '#fa233b', marginLeft: 12 }}>
-                    {selectedTrackIds.length > 1 ? `Удалить выбранные (${selectedTrackIds.length})` : 'Удалить'}
-                  </Text>
-                </Pressable>
-              )}
-            </View>
-          )}
-        </View>
-      </Modal>
       {externalArtist && <CollectionPanel title={externalArtist.name + ' · Audius'} close={() => setExternalArtist(null)}>
         {externalArtist.tracks.length ? <TrackList tracks={externalArtist.tracks} play={track => {
           void safePlayTrack(track, externalArtist.tracks, 'Автор'); setExternalArtist(null);

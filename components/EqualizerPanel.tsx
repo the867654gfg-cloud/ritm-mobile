@@ -1,18 +1,11 @@
-import { Modal, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
+import { useEffect } from 'react';
+import { Platform, Pressable, ScrollView, Switch, Text, View, useColorScheme, useWindowDimensions } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { EQ_FREQUENCIES, EQ_PRESETS, EQ_MAX_GAIN, useMusic } from '../lib/music';
 import { CROSSFADE_OPTIONS } from '../lib/browser-audio';
 
-const speeds = [0.5, 0.8, 1, 1.25, 1.5, 2];
+const speeds = [1, 0.5, 0.8, 1.25, 1.5, 2];
 const presetLabels: Record<string, string> = { Flat: 'Ровный', 'Bass Boost': 'Больше баса', Acoustic: 'Акустика', Pop: 'Поп', Rock: 'Рок', Electronic: 'Электроника', Treble: 'Больше верхов', Presence: 'Больше верхов и середины', Vocals: 'Вокал вперёд', Soft: 'Мягкий звук' };
-const backdrop = Platform.OS === 'web' ? { backdropFilter: 'blur(35px) saturate(180%)' } : {};
-
-function Chip({ text, selected, onPress }: { text: string; selected?: boolean; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress}
-    style={{ borderRadius: 15, paddingHorizontal: 13, paddingVertical: 9, borderWidth: 1,
-      borderColor: selected ? '#fa6070' : 'rgba(255,255,255,0.2)', backgroundColor: selected ? 'rgba(250,35,59,0.75)' : 'rgba(255,255,255,0.10)' }}>
-    <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{text}</Text>
-  </Pressable>;
-}
 
 type Props = {
   close: () => void;
@@ -24,64 +17,94 @@ type Props = {
 
 export function EqualizerPanel({ close, normalization, setNormalization, crossfade, setCrossfade }: Props) {
   const music = useMusic();
-  const narrow = useWindowDimensions().width < 630;
+  const { width, height } = useWindowDimensions();
+  const dark = useColorScheme() === 'dark';
+  const surface = dark ? '#241b22' : '#fff9fc';
+  const border = dark ? '#51404a' : '#e5dce5';
+  const muted = dark ? '#cdc1ca' : '#625a65';
+  const text = dark ? '#fff' : '#211b23';
+  const pill = dark ? '#342731' : '#f2eaf0';
+  const panelBottom = (width < 780 ? 126 : 90) + 30;
+  const playerWidth = Math.min(width * 0.96, 920);
   const preset = Object.entries(EQ_PRESETS).find(([, gains]) => gains.every((gain, i) => gain === music.eqGains[i]))?.[0];
-  return <Modal transparent animationType="fade" onRequestClose={close}>
-    <View style={{ flex: 1, backgroundColor: 'rgba(16,16,24,0.45)', padding: 14, justifyContent: 'center', alignItems: 'center' }}>
-      <Pressable accessibilityElementsHidden onPress={close} style={{ position: 'absolute', inset: 0 } as any} />
-      <ScrollView style={[{ width: '100%', maxWidth: 790, maxHeight: '94%', backgroundColor: 'rgba(25,25,30,0.45)',
-        borderRadius: 34, borderWidth: 1, borderColor: 'rgba(255,255,255,0.26)' }, backdrop] as any}
-        contentContainerStyle={{ padding: narrow ? 16 : 24, gap: 16 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-          <View style={{ flex: 1 }}>
-            <Text accessibilityRole="header" style={{ color: '#fff', fontSize: 22, fontWeight: '900' }}>Эквалайзер</Text>
-            <Text style={{ color: '#eeeef2', marginTop: 3 }}>12 полос · {preset ? presetLabels[preset] : 'Ручная настройка'}</Text>
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.defaultPrevented) close(); };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [close]);
+
+  const chip = (label: string, onPress: () => void, selected = false, disabled = false) => (
+    <Pressable key={label} accessibilityRole="button" accessibilityState={{ selected, disabled }}
+      disabled={disabled} onPress={onPress} style={{
+        minHeight: 36, justifyContent: 'center', paddingHorizontal: 9, borderRadius: 9,
+        backgroundColor: selected ? '#c91635' : pill,
+      }}>
+      <Text style={{ color: selected ? '#fff' : disabled ? muted : text, fontSize: 12, fontWeight: '700' }}>{label}</Text>
+    </Pressable>
+  );
+
+  return (
+    <View accessibilityLabel="Настройки звука" style={{
+      position: 'absolute', zIndex: 150, width: Math.min(218, width - 24),
+      right: Math.max(12, (width - playerWidth) / 2), bottom: panelBottom,
+      maxHeight: Math.max(0, Math.min(450, height - panelBottom - 12)),
+      backgroundColor: surface, borderColor: border, borderWidth: 1, borderRadius: 18, padding: 12, gap: 10,
+      shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 10,
+    }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+        <Text accessibilityRole="header" style={{ flex: 1, color: text, fontSize: 17, fontWeight: '800' }}>Эквалайзер</Text>
+        <Switch accessibilityLabel="Включить эквалайзер" value={music.eqEnabled} onValueChange={music.setEqEnabled}
+          trackColor={{ true: '#fa233b', false: border }} />
+        <Pressable accessibilityRole="button" accessibilityLabel="Закрыть эквалайзер" onPress={close} style={{ padding: 5 }}>
+          <Ionicons name="close" color={muted} size={20} />
+        </Pressable>
+      </View>
+      <ScrollView horizontal accessibilityLabel="Пресеты эквалайзера" showsHorizontalScrollIndicator
+        style={{ flexGrow: 0, flexShrink: 0 }} contentContainerStyle={{ gap: 7, paddingBottom: 5 }}>
+        {Object.entries(EQ_PRESETS).map(([name, gains]) =>
+          chip(presetLabels[name] || name, () => music.applyPreset(gains), music.eqEnabled && preset === name, !music.eqEnabled))}
+      </ScrollView>
+      <ScrollView accessibilityLabel="Полосы частот и дополнительные настройки" style={{ flexGrow: 0, flexShrink: 1 }}
+        contentContainerStyle={{ gap: 4, paddingBottom: 4 }} nestedScrollEnabled>
+        {EQ_FREQUENCIES.map((hz, index) => {
+          const gain = music.eqGains[index] ?? 0;
+          return (
+            <View key={hz} style={{ minHeight: 28, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Text style={{ color: muted, fontSize: 11, width: 42 }}>{hz < 1000 ? hz + ' Гц' : hz / 1000 + ' кГц'}</Text>
+              {Platform.OS === 'web' ? (
+                <input type="range" aria-label={hz + ' Гц'} aria-valuetext={gain + ' дБ'}
+                  min={-EQ_MAX_GAIN} max={EQ_MAX_GAIN} step={1} value={gain} disabled={!music.eqEnabled}
+                  onChange={event => music.setEqGain(index, Number(event.currentTarget.value))}
+                  style={{ flex: 1, minWidth: 0, margin: 0, accentColor: '#fa233b' }} />
+              ) : <View style={{ flex: 1, flexDirection: 'row', gap: 4 }}>
+                {chip('−', () => music.setEqGain(index, gain - 1), false, !music.eqEnabled)}
+                {chip('+', () => music.setEqGain(index, gain + 1), false, !music.eqEnabled)}
+              </View>}
+              <Text style={{ color: muted, width: 35, textAlign: 'right', fontSize: 10 }}>{gain > 0 ? '+' : ''}{gain} дБ</Text>
+            </View>
+          );
+        })}
+        {chip('Сбросить эквалайзер', music.resetEq)}
+        <View style={{ borderTopWidth: 1, borderColor: border, paddingTop: 8, gap: 7 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: text, fontSize: 12 }}>Ровная громкость</Text>
+            <Switch accessibilityLabel="Ровная громкость" value={normalization} onValueChange={setNormalization} />
           </View>
-          <Chip text="Закрыть" onPress={close} />
-        </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
-          {Object.entries(EQ_PRESETS).map(([name, gains]) =>
-            <Chip key={name} text={presetLabels[name] || name} selected={preset === name} onPress={() => music.applyPreset(gains)} />)}
-        </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', borderRadius: 18, backgroundColor: 'rgba(18,18,26,0.35)', paddingVertical: 9 }}>
-          {EQ_FREQUENCIES.map((hz, index) => {
-            const value = music.eqGains[index] || 0;
-            return <View key={hz} style={{ width: narrow ? '16.66%' : '8.33%', alignItems: 'center', paddingVertical: 7, gap: 5 }}>
-              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>{value > 0 ? '+' : ''}{value} дБ</Text>
-              {Platform.OS === 'web' ? <input type="range" aria-label={hz + ' Гц'} aria-valuetext={value + ' дБ'}
-                min={-EQ_MAX_GAIN} max={EQ_MAX_GAIN} step={1} value={value}
-                onChange={event => music.setEqGain(index, Number(event.currentTarget.value))}
-                style={{ writingMode: 'vertical-lr', direction: 'rtl', width: 26, height: narrow ? 79 : 116, accentColor: '#fa233b', cursor: 'ns-resize', margin: 0 }} />
-                : <><Chip text="+" onPress={() => music.setEqGain(index, value + 1)} /><Chip text="−" onPress={() => music.setEqGain(index, value - 1)} /></>}
-              <Text style={{ color: '#ededf1', fontSize: 12 }}>{hz < 1000 ? hz : hz / 1000 + 'к'}</Text>
-            </View>;
-          })}
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <Text style={{ color: '#eeeef2', fontSize: 13 }}>Полоса регулируется от −12 до +12 дБ</Text>
-          <Pressable accessibilityRole="button" onPress={music.resetEq}
-            style={{ paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14, backgroundColor: '#fa233b' }}>
-            <Text style={{ color: '#fff', fontWeight: '800' }}>Сбросить эквалайзер</Text>
-          </Pressable>
-        </View>
-        <View style={{ gap: 8, borderTopWidth: 1, borderTopColor: '#ffffff26', paddingTop: 13 }}>
-          <Pressable accessibilityRole="switch" accessibilityState={{ checked: normalization }} onPress={() => setNormalization(!normalization)}
-            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingVertical: 7 }}>
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800' }}>Ровная громкость</Text>
-            <Text style={{ color: '#fff', fontWeight: '700', borderRadius: 14, overflow: 'hidden', paddingHorizontal: 10, paddingVertical: 5,
-              backgroundColor: normalization ? '#b02137' : '#ffffff21' }}>{normalization ? 'Вкл.' : 'Выкл.'}</Text>
-          </Pressable>
-          <Text style={{ color: '#eeeef2', fontSize: 13 }}>Плавный переход между треками</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
-            {CROSSFADE_OPTIONS.map(seconds => <Chip key={seconds} text={seconds ? seconds + ' с' : 'Выкл.'}
-              selected={crossfade === seconds} onPress={() => setCrossfade(seconds)} />)}
+          <Text style={{ color: text, fontSize: 12 }}>Плавный переход</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {CROSSFADE_OPTIONS.map(seconds => chip(seconds ? seconds + ' с' : 'Выкл.', () => setCrossfade(seconds), crossfade === seconds))}
           </View>
-        </View>
-        <Text style={{ color: '#eeeef2', fontSize: 13, fontWeight: '700' }}>Скорость воспроизведения</Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
-          {speeds.map(speed => <Chip key={speed} text={speed + '×'} selected={music.playbackSpeed === speed} onPress={() => music.setPlaybackSpeed(speed)} />)}
         </View>
       </ScrollView>
+      <View style={{ borderTopWidth: 1, borderColor: border, paddingTop: 8, gap: 7 }}>
+        <Text style={{ color: text, fontSize: 13, fontWeight: '700' }}>Скорость</Text>
+        <ScrollView horizontal accessibilityLabel="Скорость воспроизведения" showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0, flexShrink: 0 }} contentContainerStyle={{ gap: 6 }}>
+          {speeds.map(speed => chip(speed + '×', () => music.setPlaybackSpeed(speed), music.playbackSpeed === speed))}
+        </ScrollView>
+      </View>
     </View>
-  </Modal>;
+  );
 }
