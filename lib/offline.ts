@@ -1,5 +1,7 @@
 import Constants from 'expo-constants';
 import type { Track } from './music-data';
+import { packagedMedia, type DownloadQuality } from './stream-media';
+import { cacheEncryptedAudio, requireEncryptedOfflineWorker } from './web-offline-crypto';
 
 const MUSIC = 'ritm-music-v1';
 const listKey = 'ritm_offline_tracks_v1';
@@ -45,48 +47,7 @@ export function offlineTracks(): Track[] {
 }
 
 const downloads = new Map<string, Promise<void>>();
-const chunkSize = 4 * 1024 * 1024;
-
-async function cacheAudio(cache: Cache, url: string, duration: number) {
-  if (await cache.match(url)) return;
-  const full = async () => {
-    const response = await fetch(url, { cache: 'force-cache' });
-    if (response.status !== 200) throw new Error('Не удалось скачать трек полностью.');
-    await cache.put(url, response);
-  };
-  if (duration < 180) return full();
-  const controller = new AbortController();
-  try {
-    const head = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(3500) });
-    const size = Number(head.headers.get('content-length'));
-    const modified = head.headers.get('last-modified');
-    if (head.ok && modified && Number.isSafeInteger(size) && size >= 2 * chunkSize && size <= 128 * 1024 * 1024) {
-      const parts: Blob[] = [];
-      const count = Math.ceil(size / chunkSize);
-      let next = 0;
-      async function worker() {
-        while (next < count) {
-          const index = next++;
-          const start = index * chunkSize;
-          const end = Math.min(size, start + chunkSize) - 1;
-          const response = await fetch(url, { headers: { Range: 'bytes=' + start + '-' + end }, signal: controller.signal });
-          if (response.status !== 206 || response.headers.get('last-modified') !== modified) throw new Error();
-          parts[index] = await response.blob();
-          if (parts[index].size !== end - start + 1) throw new Error();
-        }
-      }
-      await Promise.all([worker(), worker(), worker()]);
-      const type = head.headers.get('content-type') || 'audio/mpeg';
-      await cache.put(url, new Response(new Blob(parts, { type }), { headers: {
-        'Content-Type': type, 'Content-Length': String(size), 'Last-Modified': modified,
-      } }));
-      return;
-    }
-  } catch { controller.abort(); }
-  await full();
-}
-
-export async function rememberOffline(track: Track) {
+export async function rememberOffline(track: Track, quality?: DownloadQuality) {
   const url = new URL(track.url || '');
   if (url.protocol !== 'https:' || !url.hostname.endsWith('.supabase.co') || url.search ||
       !url.pathname.startsWith('/storage/v1/object/public/music-storage/')) {
@@ -95,10 +56,13 @@ export async function rememberOffline(track: Track) {
   if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
     throw new Error('Обновите страницу после установки офлайн-режима.');
   }
+  const source = quality ? packagedMedia(track)?.offline(quality) : url.href;
+  if (!source) throw new Error('Это качество недоступно для трека.');
+  await requireEncryptedOfflineWorker(navigator.serviceWorker.controller);
   const cache = await caches.open(MUSIC);
   let transfer = downloads.get(url.href);
   if (!transfer) {
-    transfer = cacheAudio(cache, url.href, track.duration).finally(() => downloads.delete(url.href));
+    transfer = cacheEncryptedAudio(cache, url.href, source, quality === 'lossless' ? 'audio/flac' : quality ? 'audio/mp4' : undefined).finally(() => downloads.delete(url.href));
     downloads.set(url.href, transfer);
   }
   await transfer;
@@ -107,6 +71,7 @@ export async function rememberOffline(track: Track) {
 }
 
 export async function clearOffline() {
+  await Promise.allSettled(downloads.values());
   await caches.delete(MUSIC);
   localStorage.removeItem(listKey);
 }

@@ -23,6 +23,8 @@ import { FullPlayer } from '../../components/FullPlayer';
 import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
 import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
+import { DOWNLOAD_QUALITIES, hasLosslessDownload, packagedMedia, type DownloadQuality } from '../../lib/stream-media';
+import { detachStream, useTrackStream, warmTrack } from '../../lib/web-stream';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
 import { addTracksToPlaylist, createUserPlaylist, hasLegacyLibrary, importLegacyLibrary, loadPlayCounts, loadUserLibrary, qualifyListening, recordListening, setFavorite, UserPlaylist, ListeningTicket } from '../../lib/user-library';
 
@@ -797,6 +799,7 @@ function CatalogScreen() {
 
   function clearAudio(audio: HTMLAudioElement) {
     audio.pause();
+    detachStream(audio);
     if (audio.hasAttribute('src')) {
       audio.removeAttribute('src');
       audio.load();
@@ -850,6 +853,11 @@ function CatalogScreen() {
         if (audio !== webAudioRef.current) return;
         countPlayback(audio);
         if (normalization) mixer.current?.measureLevel(audio);
+        if (!audio.paused && !audio.seeking && !isShuffle && !isRepeat && audio.duration > 0 &&
+            audio.currentTime >= audio.duration * 0.75) {
+          const next = queuedNext.current[0];
+          if (next) warmTrack(next, 12);
+        }
         if (pendingSeek.current !== undefined) return;
         checkTransition(audio);
         {
@@ -974,11 +982,20 @@ function CatalogScreen() {
       if (request !== playRequest.current) return;
       if (!rawUrl) { void m.pauseTrack(); setNotice('У трека нет доступного аудиофайла.'); return; }
       try {
-        audio.src = rawUrl;
+        const adaptive = context !== 'Скачанные' && useTrackStream(audio, playableTrack, rawUrl);
+        if (context === 'Скачанные') audio.src = rawUrl;
         if (!mixer.current) audio.volume = volume;
         audio.playbackRate = m?.playbackSpeed || 1.0;
         mixer.current?.resetLevel(audio);
-        try { await audio.play(); } catch (error) {
+        try {
+          try { await audio.play(); }
+          catch (error) {
+            if (!adaptive || request !== playRequest.current) throw error;
+            detachStream(audio);
+            audio.src = rawUrl;
+            await audio.play();
+          }
+        } catch (error) {
           const audiusId = track.raw_id || (track.id.startsWith('audius_') ? track.id.slice(7) : null);
           if (!audiusId || request !== playRequest.current) throw error;
           audio.src = `${audiusHostsCache?.[1] ?? AUDIUS_HOSTS[1]}/v1/tracks/${audiusId}/stream?app_name=RITM_APP`;
@@ -1040,13 +1057,13 @@ function CatalogScreen() {
       audio.preload = 'auto';
       const plan: PreparedTransition = { audio, track, request: playRequest.current, approved: !supabase || !navigator.onLine, starting: false };
       preparedTransition.current = prepared = plan;
-      if (plan.approved) audio.src = rawUrl;
+      if (plan.approved) useTrackStream(audio, track, rawUrl);
       else void (async () => {
         try {
           const visibility = await supabase!.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).maybeSingle();
           if (preparedTransition.current !== plan || visibility.data || visibility.error) return;
           plan.approved = true;
-          audio.src = rawUrl;
+          useTrackStream(audio, track, rawUrl);
         } catch {}
       })();
     }
@@ -1394,6 +1411,28 @@ function CatalogScreen() {
     [...new Map([...globalSearchResults, ...cloudUploadedTracks, ...myMusicTracks].map(track => [track.id, track])).values()],
     track => ({ ...trackCards[track.id]?.music, ...track.music }),
   ) : [], [recommendationTrack, trackCards, globalSearchResults, cloudUploadedTracks, myMusicTracks]);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || (!selectedPlaylistModal && activeTab !== 'main')) return;
+    const tracks = (selectedPlaylistModal?.tracks ?? catalogResults).filter(track => packagedMedia(track));
+    if (selectedPlaylistModal) {
+      const timer = setTimeout(() => tracks.slice(0, 2).forEach(track => warmTrack(track)), 450);
+      return () => clearTimeout(timer);
+    }
+    const targets = new Map<Element, Track>();
+    for (const track of tracks) {
+      const row = document.getElementById('ritm-prefetch-' + track.id);
+      if (row) targets.set(row, track);
+    }
+    const observer = new IntersectionObserver(entries => {
+      const nearby = entries.filter(entry => entry.isIntersecting).slice(0, 2);
+      for (const entry of nearby) {
+        const track = targets.get(entry.target);
+        if (track) warmTrack(track);
+      }
+    }, { rootMargin: '0px 0px 80px 0px' });
+    targets.forEach((_, row) => observer.observe(row));
+    return () => observer.disconnect();
+  }, [activeTab, catalogResults, selectedPlaylistModal, visibleCount]);
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
 
   const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition });
@@ -1426,6 +1465,26 @@ function CatalogScreen() {
       navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
     }
   }, [m.currentTrack?.id, m.isPlaying]);
+
+  const [downloadQualityTrack, setDownloadQualityTrack] = useState<Track | null>(null);
+  const [losslessTrackId, setLosslessTrackId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!downloadQualityTrack) return;
+    const controller = new AbortController();
+    void hasLosslessDownload(downloadQualityTrack, controller.signal).then(found => {
+      if (!controller.signal.aborted) setLosslessTrackId(found ? downloadQualityTrack.id : null);
+    });
+    return () => { controller.abort(); setLosslessTrackId(null); };
+  }, [downloadQualityTrack]);
+  const downloadTrack = (track: Track, quality?: DownloadQuality) => {
+    setDownloadQualityTrack(null);
+    setDownloadIds(ids => [...ids, track.id]);
+    void rememberOffline(track, quality).then(() => {
+      setOfflineList(offlineTracks());
+      setNotice('Трек сохранён для офлайна.');
+    }).catch(error => setNotice(error.message || 'Не удалось сохранить трек.'))
+      .finally(() => setDownloadIds(ids => ids.filter(id => id !== track.id)));
+  };
 
   const renderTrackMenu = () => {
     if (!selectedTrackMenu) return null;
@@ -1482,11 +1541,8 @@ function CatalogScreen() {
                 !downloadIds.includes(track.id) && !offlineList.some(saved => saved.id === track.id) &&
                 item('Скачать', 'download-outline', () => {
                   close();
-                  setDownloadIds(ids => [...ids, track.id]);
-                  void rememberOffline(track).then(() => {
-                    setOfflineList(offlineTracks()); setNotice('Трек сохранён для офлайна.');
-                  }).catch(error => setNotice(error.message || 'Не удалось сохранить трек.'))
-                    .finally(() => setDownloadIds(ids => ids.filter(id => id !== track.id)));
+                  if (packagedMedia(track)) setDownloadQualityTrack(track);
+                  else downloadTrack(track);
                 })}
               {(track.music || trackCards[track.id]?.music) &&
                 item('По темпу и тональности', 'musical-notes-outline', () => { close(); setRecommendationTrack(track); })}
@@ -1709,7 +1765,10 @@ function CatalogScreen() {
             <RememberedScroll position={listPositions.current.main} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
               {offline && offlineList.length > 0 && <View style={{ gap: 8 }}>
                 <Text style={{ fontWeight: '800' }}>Скачано на этом устройстве</Text>
-                <TrackList tracks={offlineList} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
+                <TrackList tracks={offlineList.filter(track => {
+                  const query = searchQuery.trim().toLocaleLowerCase();
+                  return !query || (track.title + ' ' + (track.artist ?? '')).toLocaleLowerCase().includes(query);
+                })} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
                 {authUser && <PrimaryButton title="Очистить скачанные" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные треки.'))} />}
               </View>}
 
@@ -1828,10 +1887,11 @@ function CatalogScreen() {
                 const isSelected = m?.currentTrack?.id === item.id;
                 return (
                   <View 
-                    key={item.id} 
+                    key={item.id}
+                    nativeID={'ritm-prefetch-' + item.id}
                     style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}
                   >
-                    <Pressable onPress={() => void safePlayTrack(item, catalogResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
+                    <Pressable onHoverIn={() => warmTrack(item)} onPress={() => void safePlayTrack(item, catalogResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
@@ -2429,6 +2489,13 @@ function CatalogScreen() {
       </Modal>
 
       {!selectedPlaylistModal && renderTrackMenu()}
+      {downloadQualityTrack && <CollectionPanel title="Качество скачивания" close={() => setDownloadQualityTrack(null)}>
+        {DOWNLOAD_QUALITIES.map(quality => <PrimaryButton key={quality} variant="soft" title={quality + ' кбит/с'}
+          onPress={() => downloadTrack(downloadQualityTrack, quality)} />)}
+        {losslessTrackId === downloadQualityTrack.id && <PrimaryButton variant="soft" title="Lossless · FLAC"
+          onPress={() => downloadTrack(downloadQualityTrack, 'lossless')} />}
+        <PrimaryButton variant="soft" title="Исходный файл" onPress={() => downloadTrack(downloadQualityTrack)} />
+      </CollectionPanel>}
       {recommendationTrack && <CollectionPanel title="По темпу и тональности" close={() => setRecommendationTrack(null)}>
         {suggestions.length ? suggestions.map(({ track, bpm, key }) => <PrimaryButton key={track.id} variant="soft"
           title={track.title + ' · ' + Math.round(bpm) + ' BPM · ' + key}
