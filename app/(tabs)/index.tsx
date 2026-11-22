@@ -22,9 +22,14 @@ import { EqualizerPanel } from '../../components/EqualizerPanel';
 import { FullPlayer } from '../../components/FullPlayer';
 import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
-import { clearOffline, offlineTracks, rememberOffline } from '../../lib/offline';
+import { offlineTracks, rememberOffline, removeOffline } from '../../lib/offline';
+import { useDownloadTransfers } from '../../lib/use-download-transfers';
+import { DownloadList } from '../../components/DownloadList';
+import { TrackProcessing, useTrackProcessing } from '../../components/TrackProcessing';
+import { usePlaybackHandoff } from '../../lib/use-playback-handoff';
 import { DOWNLOAD_QUALITIES, hasLosslessDownload, packagedMedia, type DownloadQuality } from '../../lib/stream-media';
 import { detachStream, useTrackStream, warmTrack } from '../../lib/web-stream';
+import { catalogueFailure, playbackFailure } from '../../lib/playback-failure';
 import { deleteTracksWithFiles, DeleteTracksResult } from '../../lib/tracks';
 import { addTracksToPlaylist, createUserPlaylist, hasLegacyLibrary, importLegacyLibrary, loadPlayCounts, loadUserLibrary, qualifyListening, recordListening, setFavorite, UserPlaylist, ListeningTicket } from '../../lib/user-library';
 
@@ -414,7 +419,6 @@ function CatalogScreen() {
   const listPositions = useRef({ main: { y: 0 }, uploads: { y: 0 }, my_music: { y: 0 } });
   const [updateReady, setUpdateReady] = useState(false);
   const updatePending = useRef(false);
-  const [downloadIds, setDownloadIds] = useState<string[]>([]);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const editingInProgress = useRef(false);
   editingInProgress.current = Boolean(showUploadPanel || editingTrack || batchTracks || playlistEdit || showCreatePlaylistModal || reportTrack);
@@ -861,6 +865,7 @@ function CatalogScreen() {
       
       const updateTime = () => {
         if (audio !== webAudioRef.current) return;
+        lastPlayedSeconds.current = audio.currentTime;
         countPlayback(audio);
         if (normalization) mixer.current?.measureLevel(audio);
         if (!audio.paused && !audio.seeking && !isShuffle && !isRepeat && audio.duration > 0 &&
@@ -905,10 +910,35 @@ function CatalogScreen() {
           playback.current.position = audio.currentTime;
         }
       };
+      const networkFailure = () => {
+        const track = m.currentTrack;
+        const request = playRequest.current;
+        if (!track || audio !== webAudioRef.current || playingRequest.current !== request || audio.error?.code !== 2) return;
+        playbackDiagnostics.current.failed++;
+        const position = audio.currentTime || lastPlayedSeconds.current;
+        const retry = () => {
+          if (request !== playRequest.current) return;
+          void safePlayTrack(track, undefined, playContext.current, position, true, true);
+        };
+        const recent = recovery.current;
+        if (recent && recent.id === track.id && Date.now() - recent.at < 30_000) {
+          setNotice(playbackFailure(2));
+          void m.pauseTrack();
+          return;
+        }
+        recovery.current = { id: track.id, at: Date.now() };
+        if (navigator.onLine) retry();
+        else {
+          reconnect.current = retry;
+          setNotice('Соединение потеряно. Воспроизведение продолжится, когда сеть вернётся.');
+        }
+      };
+      audio.addEventListener('error', networkFailure);
       audio.addEventListener('seeking', resetClock);
       audio.addEventListener('playing', resetClock);
       audio.addEventListener('ended', ended);
       return () => {
+        audio.removeEventListener('error', networkFailure);
         audio.removeEventListener('timeupdate', updateTime);
         audio.removeEventListener('loadedmetadata', updateDuration);
         audio.removeEventListener('ended', ended);
@@ -942,6 +972,15 @@ function CatalogScreen() {
 
   const setUpcoming = (items: Track[]) => { queuedNext.current = items; setNextTracks(items); };
   const visibilityRequest = useRef<AbortController>();
+  const recovery = useRef<{ id: string; at: number }>();
+  const reconnect = useRef<(() => void) | undefined>();
+  const lastPlayedSeconds = useRef(0);
+  const playbackDiagnostics = useRef({ started: 0, failed: 0, totalStartMs: 0 });
+  useEffect(() => {
+    const resume = () => { const action = reconnect.current; reconnect.current = undefined; action?.(); };
+    window.addEventListener('online', resume);
+    return () => window.removeEventListener('online', resume);
+  }, []);
   useEffect(() => () => visibilityRequest.current?.abort(), []);
 
   function playableWhileCatalogueUnavailable(track: Track, status: number, context?: string) {
@@ -954,6 +993,9 @@ function CatalogScreen() {
   const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0, fromQueue = false, back = false) => {
     cancelPendingSeek();
     const request = ++playRequest.current;
+    const startedAt = performance.now();
+    reconnect.current = undefined;
+    lastPlayedSeconds.current = startAt;
     visibilityRequest.current?.abort();
     cancelTransition();
     const audio = webAudioRef.current;
@@ -966,7 +1008,7 @@ function CatalogScreen() {
       if (visible.data || (visible.error && !playableWhileCatalogueUnavailable(track, visible.status, context))) {
         playingRequest.current = request;
         if (audio?.ended) void m.pauseTrack();
-        setNotice(visible.data ? 'Трек снят с публикации.' : 'Не удалось проверить доступность трека.');
+        setNotice(visible.data ? 'Трек снят с публикации.' : catalogueFailure(visible.status));
         return;
       }
     }
@@ -1021,11 +1063,14 @@ function CatalogScreen() {
         if (request !== playRequest.current) return;
         if (startAt > 0 && startAt < audio.duration) audio.currentTime = startAt;
         playingRequest.current = request;
+        playbackDiagnostics.current.started++;
+        playbackDiagnostics.current.totalStartMs += performance.now() - startedAt;
         registerPlayback(track, audio, context);
       } catch {
         if (request === playRequest.current) {
           void m.pauseTrack();
-          setNotice('Этот трек сейчас не удалось воспроизвести.');
+          playbackDiagnostics.current.failed++;
+          setNotice(playbackFailure(audio.error?.code));
         }
       }
     }
@@ -1134,6 +1179,11 @@ function CatalogScreen() {
   };
 
   const handleTogglePlay = async () => {
+    if (reconnect.current) {
+      reconnect.current = undefined;
+      void m.pauseTrack();
+      return;
+    }
     if (!m.currentTrack && queuedNext.current.length) { handleNext(); return; }
     if (Platform.OS === 'web' && webAudioRef.current && webAudioRef.current.src) {
       if (webAudioRef.current.paused) {
@@ -1141,7 +1191,13 @@ function CatalogScreen() {
         try {
           await webAudioRef.current.play();
           await m.resumeTrack();
-        } catch { setNotice('Этот трек сейчас не удалось воспроизвести.'); }
+        } catch {
+          const track = m.currentTrack;
+          const audio = webAudioRef.current;
+          if (track && audio?.error && navigator.onLine) {
+            void safePlayTrack(track, undefined, playContext.current, audio.currentTime || 0, true, true);
+          } else setNotice(playbackFailure(audio?.error?.code));
+        }
       } else {
         cancelTransition();
         webAudioRef.current.pause();
@@ -1446,7 +1502,43 @@ function CatalogScreen() {
     targets.forEach((_, row) => observer.observe(row));
     return () => observer.disconnect();
   }, [activeTab, catalogResults, selectedPlaylistModal, visibleCount]);
+  const processing = useTrackProcessing(authUser?.id, activeTab === 'uploads');
+  const matchingPlaylists = userPlaylists.filter(playlist => playlist.title === playContext.current &&
+    playlist.tracks.some(track => track.id === m.currentTrack?.id));
+  const handoff = usePlaybackHandoff(authUser?.id, m.currentTrack, () => webAudioRef.current?.currentTime ?? 0, m.isPlaying,
+    matchingPlaylists.length === 1 ? matchingPlaylists[0].id : null);
+  const handoffButton = handoff && !m.currentTrack && <PrimaryButton variant="soft"
+    title={'Продолжить · ' + handoff.track_data.title + ' · ' + formatTime(handoff.seconds)}
+    onPress={() => {
+      const playlist = userPlaylists.find(item => item.id === handoff.playlist_id);
+      const track = playlist?.tracks.find(item => item.id === handoff.track_data.id) || handoff.track_data;
+      void safePlayTrack(track, playlist?.tracks || [track], playlist?.title || 'Слушать', handoff.seconds);
+    }} />;
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
+
+  const keyboard = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay });
+  keyboard.current = { next: handleNext, previous: handlePrevious, seek: seekTo, toggle: handleTogglePlay };
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handle = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey ||
+          editingInProgress.current || !(event.target instanceof Element) ||
+          event.target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="dialog"], [role="menu"], [role="slider"]')) return;
+      const seconds = webAudioRef.current?.currentTime || 0;
+      const player = keyboard.current;
+      if (event.code === 'Space' && !event.repeat) void player.toggle();
+      else if (event.key === 'ArrowRight') {
+        if (event.shiftKey) { if (!event.repeat) player.next(); }
+        else player.seek(seconds + 5);
+      } else if (event.key === 'ArrowLeft') {
+        if (event.shiftKey) { if (!event.repeat) player.previous(); }
+        else player.seek(Math.max(0, seconds - 5));
+      } else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', handle);
+    return () => window.removeEventListener('keydown', handle);
+  }, []);
 
   const mediaActions = useRef({ next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition });
   mediaActions.current = { next: handleNext, previous: handlePrevious, seek: seekTo, cancelTransition };
@@ -1489,14 +1581,13 @@ function CatalogScreen() {
     });
     return () => { controller.abort(); setLosslessTrackId(null); };
   }, [downloadQualityTrack]);
+  const transfers = useDownloadTransfers(rememberOffline, () => {
+    setOfflineList(offlineTracks());
+    setNotice('Трек сохранён для офлайна.');
+  });
   const downloadTrack = (track: Track, quality?: DownloadQuality) => {
     setDownloadQualityTrack(null);
-    setDownloadIds(ids => [...ids, track.id]);
-    void rememberOffline(track, quality).then(() => {
-      setOfflineList(offlineTracks());
-      setNotice('Трек сохранён для офлайна.');
-    }).catch(error => setNotice(error.message || 'Не удалось сохранить трек.'))
-      .finally(() => setDownloadIds(ids => ids.filter(id => id !== track.id)));
+    transfers.run(track, quality);
   };
 
   const renderTrackMenu = () => {
@@ -1551,7 +1642,7 @@ function CatalogScreen() {
                 })}
               {track.user_id && item('Страница автора', 'person-outline', () => { close(); setArtistId(track.user_id!); })}
               {authUser && track.url?.includes('/storage/v1/object/public/music-storage/') &&
-                !downloadIds.includes(track.id) && !offlineList.some(saved => saved.id === track.id) &&
+                !transfers.entries.some(item => item.track.id === track.id) && !offlineList.some(saved => saved.id === track.id) &&
                 item('Скачать', 'download-outline', () => {
                   close();
                   if (packagedMedia(track)) setDownloadQualityTrack(track);
@@ -1774,14 +1865,11 @@ function CatalogScreen() {
           </View>}
           {activeTab === 'main' && (
             <RememberedScroll position={listPositions.current.main} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {offline && offlineList.length > 0 && <View style={{ gap: 8 }}>
-                <Text style={{ fontWeight: '800' }}>Скачано на этом устройстве</Text>
-                <TrackList tracks={offlineList.filter(track => {
-                  const query = searchQuery.trim().toLocaleLowerCase();
-                  return !query || (track.title + ' ' + (track.artist ?? '')).toLocaleLowerCase().includes(query);
-                })} play={track => void safePlayTrack(track, offlineList, 'Скачанные')} />
-                {authUser && <PrimaryButton title="Очистить скачанные" variant="soft" onPress={() => void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные треки.'))} />}
-              </View>}
+              {handoffButton}
+              <DownloadList tracks={offlineList} transfers={transfers.entries} query={searchQuery}
+                play={track => void safePlayTrack(track, offlineList, 'Скачанные')}
+                remove={track => void removeOffline(track).then(() => setOfflineList(offlineTracks())).catch(() => setNotice('Не удалось удалить файл.'))}
+                cancel={transfers.cancel} retry={item => transfers.run(item.track, item.quality)} />
 
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
                 <TextInput
@@ -1965,6 +2053,7 @@ function CatalogScreen() {
                         </View>
                       </View>
                     </Pressable>
+                    <TrackProcessing trackId={item.id} status={processing.jobs?.[item.id]} refresh={processing.refresh} />
                     <Text style={{ fontSize: 13, color: '#8e8e93', marginRight: 12 }}>{formatTime(item.duration)}</Text>
                     <Pressable
                       accessibilityRole="button" accessibilityLabel={'Действия для ' + item.title} onPress={event => openTrackMenu(event, item, 'uploads')} style={{ padding: 10, zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.05)', borderRadius: 8, outlineStyle: 'none' as any }}>
@@ -2526,6 +2615,14 @@ function CatalogScreen() {
         setSelectedTrackDetails(updated);
         setNotice('Изменения сохранены.');
       }} />}
+      {showModeration && canModerate && <View accessibilityLabel="Диагностика текущего сеанса"
+        style={{ position: 'absolute', bottom: 118, right: 16, padding: 12, zIndex: 100, backgroundColor: '#fff', borderRadius: 8 }}>
+        <Text style={{ color: '#222' }}>
+          {'Запуски: ' + playbackDiagnostics.current.started + ' · сбои: ' + playbackDiagnostics.current.failed +
+            (playbackDiagnostics.current.started ? ' · старт в среднем ' +
+              Math.round(playbackDiagnostics.current.totalStartMs / playbackDiagnostics.current.started) + ' мс' : '')}
+        </Text>
+      </View>}
       {showModeration && canModerate && <ModerationPanel close={() => setShowModeration(false)} onVisibility={(id, hide) => {
         setHiddenTrackIds(previous => hide ? [...new Set([...previous, id])] : previous.filter(item => item !== id));
         if (hide) {

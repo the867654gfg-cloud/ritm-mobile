@@ -1,3 +1,4 @@
+import type { DownloadProgress, SavedTrack } from './download-status';
 import Constants from 'expo-constants';
 import type { Track } from './music-data';
 import { packagedMedia, type DownloadQuality } from './stream-media';
@@ -39,15 +40,15 @@ export function registerOfflineShell() {
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register(base + '/ritm-offline.js').catch(console.warn);
 }
 
-export function offlineTracks(): Track[] {
+export function offlineTracks(): SavedTrack[] {
   try {
     const items = JSON.parse(localStorage.getItem(listKey) || '[]');
     return Array.isArray(items) ? items.filter(item => item && typeof item.url === 'string' && item.id) : [];
   } catch { return []; }
 }
 
-const downloads = new Map<string, Promise<void>>();
-export async function rememberOffline(track: Track, quality?: DownloadQuality) {
+const downloads = new Map<string, Promise<number>>();
+export async function rememberOffline(track: Track, quality?: DownloadQuality, signal?: AbortSignal, progress?: DownloadProgress) {
   const url = new URL(track.url || '');
   if (url.protocol !== 'https:' || !url.hostname.endsWith('.supabase.co') || url.search ||
       !url.pathname.startsWith('/storage/v1/object/public/music-storage/')) {
@@ -62,16 +63,24 @@ export async function rememberOffline(track: Track, quality?: DownloadQuality) {
   const cache = await caches.open(MUSIC);
   let transfer = downloads.get(url.href);
   if (!transfer) {
-    transfer = cacheEncryptedAudio(cache, url.href, source, quality === 'lossless' ? 'audio/flac' : quality ? 'audio/mp4' : undefined).finally(() => downloads.delete(url.href));
+    transfer = cacheEncryptedAudio(cache, url.href, source, quality === 'lossless' ? 'audio/flac' : quality ? 'audio/mp4' : undefined, signal, progress).finally(() => downloads.delete(url.href));
     downloads.set(url.href, transfer);
   }
-  await transfer;
+  const downloadedBytes = await transfer;
   const previous = offlineTracks().filter(item => item.id !== track.id);
-  localStorage.setItem(listKey, JSON.stringify([track, ...previous]));
+  localStorage.setItem(listKey, JSON.stringify([{ ...track, downloadedBytes, downloadedQuality: quality }, ...previous]));
 }
 
 export async function clearOffline() {
   await Promise.allSettled(downloads.values());
   await caches.delete(MUSIC);
   localStorage.removeItem(listKey);
+}
+
+export async function removeOffline(track: Track) {
+  const remaining = offlineTracks().filter(item => item.id !== track.id);
+  if (track.url && !remaining.some(item => item.url === track.url)) {
+    await (await caches.open(MUSIC)).delete(track.url);
+  }
+  localStorage.setItem(listKey, JSON.stringify(remaining));
 }

@@ -1,3 +1,5 @@
+import type { DownloadProgress } from './download-status';
+
 const limit = 32 * 1024 * 1024;
 
 function openKeys() {
@@ -48,15 +50,17 @@ export async function requireEncryptedOfflineWorker(worker: ServiceWorker) {
   } finally { channel.port1.close(); }
 }
 
-export async function cacheEncryptedAudio(cache: Cache, key: string, url: string, typeOverride?: string) {
+export async function cacheEncryptedAudio(cache: Cache, key: string, url: string, typeOverride: string | undefined, signal?: AbortSignal, progress?: DownloadProgress) {
   const source = new URL(url);
   if (key === url) source.searchParams.set('ritm-download', '1');
-  const response = await fetch(source);
+  const response = await fetch(source, { signal });
   const type = response.headers.get('content-type') || '';
   if (response.status !== 200 || !response.body ||
       !/^(audio\/|video\/mp4|application\/octet-stream)/i.test(type)) {
     throw new Error('Файл в этом качестве недоступен.');
   }
+  const length = Number(response.headers.get('content-length'));
+  const total = length > 0 ? length : undefined;
   const parts: Uint8Array<ArrayBuffer>[] = [];
   const reader = response.body.getReader();
   let size = 0;
@@ -70,6 +74,7 @@ export async function cacheEncryptedAudio(cache: Cache, key: string, url: string
         throw new Error('Для скачивания выберите файл размером до 32 МБ.');
       }
       parts.push(value);
+      progress?.(size, total);
     }
   } finally { reader.releaseLock(); }
   if (!size) throw new Error('Сервер вернул пустой аудиофайл.');
@@ -78,7 +83,9 @@ export async function cacheEncryptedAudio(cache: Cache, key: string, url: string
     { name: 'AES-GCM', iv: nonce, additionalData: new TextEncoder().encode(key) },
     await offlineKey(), await new Blob(parts).arrayBuffer(),
   );
+  signal?.throwIfAborted();
   await cache.put(key, new Response(new Blob([nonce, ciphertext]), {
     headers: { 'Content-Type': typeOverride || type, 'X-Ritm-Encrypted': '1', 'X-Ritm-Download': crypto.randomUUID() },
   }));
+  return size;
 }
