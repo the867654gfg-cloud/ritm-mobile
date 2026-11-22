@@ -3,7 +3,7 @@ import { readableTrackText } from '../../lib/track-text';
 import { DragRow, moved } from '../../components/DragRow';
 import { UploadForm } from '../../components/UploadForm';
 import { RememberedScroll } from '../../components/RememberedScroll';
-import { harmonicMatches, type MusicTags } from '../../lib/harmonic';
+import type { MusicTags } from '../../lib/harmonic';
 import { PlaybackClock, createPlaybackClock } from '../../components/PlaybackClock';
 import { createContext, useContext, useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { Text, View, Pressable, Image, Modal, TextInput, ScrollView, ActivityIndicator, Platform, useWindowDimensions, useColorScheme, type GestureResponderEvent } from 'react-native';
@@ -287,7 +287,6 @@ function CatalogScreen() {
     source: 'network' | 'my_music' | 'uploads';
     placement: { left: number; top?: number; bottom?: number; width: number; maxHeight: number };
   } | null>(null);
-  const [recommendationTrack, setRecommendationTrack] = useState<Track | null>(null);
   const darkPanel = useColorScheme() === 'dark';
   const panel = darkPanel
     ? { surface: '#261d25', border: '#55414d', text: '#fff', muted: '#d2c4cb', selected: '#501726', accent: '#ff7185' }
@@ -401,6 +400,13 @@ function CatalogScreen() {
   const [cloudUploadedTracks, setCloudUploadedTracks] = useState<Track[]>([]);
   const [globalSearchResults, setGlobalSearchResults] = useState<Track[]>([]);
   const [hiddenTrackIds, setHiddenTrackIds] = useState<string[]>([]);
+  const visibilityCache = useRef(new Set<string>());
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('ritm_hidden_public_tracks') || '[]');
+      if (Array.isArray(saved)) visibilityCache.current = new Set(saved.filter(id => typeof id === 'string'));
+    } catch {}
+  }, []);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
   const [playCounts, setPlayCounts] = useState<Record<string, { starts: number; listens: number }>>({});
@@ -628,7 +634,11 @@ function CatalogScreen() {
       if (!local || authors?.error || visibility.error) failedSources++;
       setAuthorResults(authors?.data ?? []);
       const matchingProfiles = new Set(authors?.data?.map(author => author.id) ?? []);
-      const omitted = new Set([...hiddenTrackIds, ...(visibility.data ?? []).map(item => item.track_id)]);
+      if (!visibility.error) {
+        visibilityCache.current = new Set((visibility.data ?? []).map(item => item.track_id));
+        try { localStorage.setItem('ritm_hidden_public_tracks', JSON.stringify([...visibilityCache.current])); } catch {}
+      }
+      const omitted = new Set([...hiddenTrackIds, ...visibilityCache.current]);
       const scores = new Map<Track, number>();
       const score = (track: Track) => {
         let value = scores.get(track);
@@ -934,6 +944,13 @@ function CatalogScreen() {
   const visibilityRequest = useRef<AbortController>();
   useEffect(() => () => visibilityRequest.current?.abort(), []);
 
+  function playableWhileCatalogueUnavailable(track: Track, status: number, context?: string) {
+    if (status !== 402 || hiddenTrackIds.includes(track.id) || visibilityCache.current.has(track.id)) return false;
+    if (context === 'Скачанные') return offlineList.some(saved => saved.id === track.id && saved.url === track.url);
+    return track.id.startsWith('audius_') &&
+      globalSearchResults.some(item => item.id === track.id && item.url === track.url);
+  }
+
   const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0, fromQueue = false, back = false) => {
     cancelPendingSeek();
     const request = ++playRequest.current;
@@ -946,10 +963,10 @@ function CatalogScreen() {
       visibilityRequest.current = controller;
       const visible = await supabase.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).abortSignal(controller.signal).maybeSingle();
       if (request !== playRequest.current) return;
-      if (visible.data || visible.error) {
+      if (visible.data || (visible.error && !playableWhileCatalogueUnavailable(track, visible.status, context))) {
         playingRequest.current = request;
         if (audio?.ended) void m.pauseTrack();
-        setNotice('Этот трек сейчас недоступен.');
+        setNotice(visible.data ? 'Трек снят с публикации.' : 'Не удалось проверить доступность трека.');
         return;
       }
     }
@@ -1061,7 +1078,8 @@ function CatalogScreen() {
       else void (async () => {
         try {
           const visibility = await supabase!.from('ritm_hidden_tracks').select('track_id').eq('track_id', track.id).maybeSingle();
-          if (preparedTransition.current !== plan || visibility.data || visibility.error) return;
+          if (preparedTransition.current !== plan || visibility.data ||
+              (visibility.error && !playableWhileCatalogueUnavailable(track, visibility.status, playContext.current))) return;
           plan.approved = true;
           useTrackStream(audio, track, rawUrl);
         } catch {}
@@ -1406,11 +1424,6 @@ function CatalogScreen() {
     }).slice(0, 20), cover_url: '' },
   ], [globalSearchResults, recentlyPlayed, myMusicTracks]);
 
-  const suggestions = useMemo(() => recommendationTrack ? harmonicMatches(
-    recommendationTrack,
-    [...new Map([...globalSearchResults, ...cloudUploadedTracks, ...myMusicTracks].map(track => [track.id, track])).values()],
-    track => ({ ...trackCards[track.id]?.music, ...track.music }),
-  ) : [], [recommendationTrack, trackCards, globalSearchResults, cloudUploadedTracks, myMusicTracks]);
   useEffect(() => {
     if (Platform.OS !== 'web' || (!selectedPlaylistModal && activeTab !== 'main')) return;
     const tracks = (selectedPlaylistModal?.tracks ?? catalogResults).filter(track => packagedMedia(track));
@@ -1544,8 +1557,6 @@ function CatalogScreen() {
                   if (packagedMedia(track)) setDownloadQualityTrack(track);
                   else downloadTrack(track);
                 })}
-              {(track.music || trackCards[track.id]?.music) &&
-                item('По темпу и тональности', 'musical-notes-outline', () => { close(); setRecommendationTrack(track); })}
               {item('Пожаловаться', 'flag-outline', () => {
                 close();
                 if (!authUser) { router.push('/sign-in'); return; }
@@ -2496,12 +2507,7 @@ function CatalogScreen() {
           onPress={() => downloadTrack(downloadQualityTrack, 'lossless')} />}
         <PrimaryButton variant="soft" title="Исходный файл" onPress={() => downloadTrack(downloadQualityTrack)} />
       </CollectionPanel>}
-      {recommendationTrack && <CollectionPanel title="По темпу и тональности" close={() => setRecommendationTrack(null)}>
-        {suggestions.length ? suggestions.map(({ track, bpm, key }) => <PrimaryButton key={track.id} variant="soft"
-          title={track.title + ' · ' + Math.round(bpm) + ' BPM · ' + key}
-          onPress={() => { void safePlayTrack(track); setRecommendationTrack(null); }} />)
-          : <Text>Подходящих треков пока нет.</Text>}
-      </CollectionPanel>}
+
 
       {externalArtist && <CollectionPanel title={externalArtist.name + ' · Audius'} close={() => setExternalArtist(null)}>
         {externalArtist.tracks.length ? <TrackList tracks={externalArtist.tracks} play={track => {
