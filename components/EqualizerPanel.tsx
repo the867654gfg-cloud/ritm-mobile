@@ -1,3 +1,4 @@
+import { playerPanel, playerPanelFrame } from '../lib/player-panel';
 import { useEffect } from 'react';
 import { Platform, Pressable, ScrollView, Switch, Text, View, useColorScheme, useWindowDimensions } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -19,11 +20,7 @@ export function EqualizerPanel({ close, normalization, setNormalization, crossfa
   const music = useMusic();
   const { width, height } = useWindowDimensions();
   const dark = useColorScheme() === 'dark';
-  const surface = dark ? '#241b22' : '#fff9fc';
-  const border = dark ? '#51404a' : '#e5dce5';
-  const muted = dark ? '#cdc1ca' : '#625a65';
-  const text = dark ? '#fff' : '#211b23';
-  const pill = dark ? '#342731' : '#f2eaf0';
+  const { surface, border, muted, text, selected: pill } = playerPanel(dark);
   const panelBottom = (width < 780 ? 126 : 90) + 30;
   const playerWidth = Math.min(width * 0.96, 920);
   const preset = Object.entries(EQ_PRESETS).find(([, gains]) => gains.every((gain, i) => gain === music.eqGains[i]))?.[0];
@@ -50,8 +47,7 @@ export function EqualizerPanel({ close, normalization, setNormalization, crossfa
       position: 'absolute', zIndex: 150, width: Math.min(218, width - 24),
       right: Math.max(12, (width - playerWidth) / 2), bottom: panelBottom,
       maxHeight: Math.max(0, Math.min(450, height - panelBottom - 12)),
-      backgroundColor: surface, borderColor: border, borderWidth: 1, borderRadius: 18, padding: 12, gap: 10,
-      shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 10,
+      ...playerPanelFrame, backgroundColor: surface, borderColor: border, padding: 12, gap: 10, elevation: 10,
     }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         <Text accessibilityRole="header" style={{ flex: 1, color: text, fontSize: 17, fontWeight: '800' }}>Эквалайзер</Text>

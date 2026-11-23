@@ -1,3 +1,5 @@
+import { ArtworkWash } from '../../components/ArtworkWash';
+import { playerPanel as getPlayerPanel, playerPanelFrame } from '../../lib/player-panel';
 import { trackLoudnessGain } from '../../lib/track-loudness';
 import { COLORS } from '../../components/AuthUI';
 import { useRecommendationExclusions } from '../../lib/use-recommendation-exclusions';
@@ -300,9 +302,7 @@ function CatalogScreen() {
     placement: { left: number; top?: number; bottom?: number; width: number; maxHeight: number };
   } | null>(null);
   const darkPanel = useColorScheme() === 'dark';
-  const panel = darkPanel
-    ? { surface: '#261d25', border: '#55414d', text: '#fff', muted: '#d2c4cb', selected: '#501726', accent: '#ff7185' }
-    : { surface: '#fff', border: '#e6dfe7', text: '#1c1c1e', muted: '#69616e', selected: '#ffedf0', accent: '#c61835' };
+  const panel = getPlayerPanel(darkPanel);
   const openTrackMenu = (event: GestureResponderEvent, track: Track, source: 'network' | 'my_music' | 'uploads') => {
     if (Platform.OS !== 'web') return;
     const anchor = (event.currentTarget as unknown as HTMLElement).getBoundingClientRect();
@@ -1586,11 +1586,17 @@ function CatalogScreen() {
     const track: Track = m.currentTrack;
     const artwork = track.cover_url;
     media.metadata = new MediaMetadata({ title: track.title, artist: track.artist || 'Ритм', artwork: artwork ? [{ src: artwork }] : [] });
+    const seekBy = (seconds: number) => {
+      const audio = webAudioRef.current;
+      if (audio) mediaActions.current.seek(audio.currentTime + seconds);
+    };
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
       play: () => { void webAudioRef.current?.play().then(m.resumeTrack).catch(() => {}); },
       pause: () => { mediaActions.current.cancelTransition(); webAudioRef.current?.pause(); void m.pauseTrack(); },
       nexttrack: () => mediaActions.current.next(),
       previoustrack: () => mediaActions.current.previous(),
+      seekbackward: ({ seekOffset }) => seekBy(-(seekOffset ?? 10)),
+      seekforward: ({ seekOffset }) => seekBy(seekOffset ?? 10),
       seekto: details => { if (typeof details.seekTime === 'number') mediaActions.current.seek(details.seekTime); },
     };
     for (const [action, handler] of Object.entries(handlers)) {
@@ -1603,6 +1609,25 @@ function CatalogScreen() {
       }
     };
   }, [m.currentTrack?.id]);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !('mediaSession' in navigator) || !activeAudio) return;
+    const media = navigator.mediaSession;
+    let lastSecond = -1;
+    const updatePosition = (event?: Event) => {
+      const { duration, currentTime, playbackRate } = activeAudio;
+      const second = Math.floor(currentTime);
+      if (!Number.isFinite(duration) || duration <= 0 || (event?.type === 'timeupdate' && second === lastSecond)) return;
+      lastSecond = second;
+      media.setPositionState?.({ duration, playbackRate, position: Math.min(duration, Math.max(currentTime, 0)) });
+    };
+    const events = ['loadedmetadata', 'ratechange', 'seeked', 'timeupdate'] as const;
+    events.forEach(event => activeAudio.addEventListener(event, updatePosition));
+    updatePosition();
+    return () => {
+      events.forEach(event => activeAudio.removeEventListener(event, updatePosition));
+      media.setPositionState?.();
+    };
+  }, [activeAudio]);
   useEffect(() => {
     if (Platform.OS === 'web' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = !m.currentTrack ? 'none' : m.isPlaying ? 'playing' : 'paused';
@@ -1649,11 +1674,10 @@ function CatalogScreen() {
         <Pressable accessibilityRole="button" accessibilityLabel="Закрыть меню трека" onPress={close}
           style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />
         <View accessibilityRole="menu" accessibilityLabel={'Действия для ' + track.title} style={{
-          position: 'absolute', ...placement, borderRadius: 13, borderWidth: 1,
+          position: 'absolute', ...placement, ...playerPanelFrame,
           backgroundColor: panel.surface, borderColor: panel.border,
-          shadowColor: '#000', shadowOpacity: 0.24, shadowRadius: 14, shadowOffset: { width: 0, height: 5 },
         }}>
-          <ScrollView style={{ maxHeight: placement.maxHeight, flexGrow: 0 }} contentContainerStyle={{ padding: 4 }}>
+          <ScrollView style={{ maxHeight: placement.maxHeight, flexGrow: 0 }} contentContainerStyle={{ padding: 6 }}>
             {showPlaylistSelector ? <>
               {item('Назад', 'chevron-back', () => setShowPlaylistSelector(false))}
               {userPlaylists.map(playlist => <View key={playlist.id}>
@@ -2263,6 +2287,9 @@ function CatalogScreen() {
         boxShadow: '0 12px 35px rgba(0, 0, 0, 0.3)' as any,
         zIndex: 100
       }}>
+        <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 42, overflow: 'hidden' }}>
+          <ArtworkWash uri={m.currentTrack?.small_cover_url || m.currentTrack?.cover_url || undefined} opacity={0.22} />
+        </View>
         <View style={{ position: 'absolute', top: 8, left: 24, right: 24, height: 12, zIndex: 120, justifyContent: 'center' }}>
           <PlaybackClock clock={clock}>{seconds => <input aria-label="Перемотка" type="range" min={0} max={activeDuration || 1}
             step={0.1} value={Math.min(seconds, activeDuration)} disabled={!activeDuration}
@@ -2617,8 +2644,8 @@ function CatalogScreen() {
           <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <Pressable accessibilityElementsHidden onPress={() => setSelectedTrackDetails(null)}
               style={{ position: 'absolute', top: 0, right: 0, left: 0, bottom: 0, backgroundColor: '#10101670' }} />
-            <View style={{ width: '100%', maxWidth: 360, padding: 16, gap: 14, borderRadius: 19,
-              borderWidth: 1, borderColor: panel.border, backgroundColor: panel.surface }}>
+            <View style={{ ...playerPanelFrame, width: '100%', maxWidth: 360, padding: 16, gap: 14,
+              borderColor: panel.border, backgroundColor: panel.surface }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                 <TrackCoverImage track={selectedTrackDetails} style={{ width: 64, height: 64, borderRadius: 11 }} />
                 <View style={{ flex: 1 }}>
