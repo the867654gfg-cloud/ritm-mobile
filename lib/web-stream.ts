@@ -57,17 +57,38 @@ async function playlist(url: string, signal: AbortSignal) {
   return body;
 }
 
-export function warmTrack(track: Track, seconds = 8) {
+export function warmTrack(track: Track, seconds = 8, cancellation?: AbortSignal) {
   const media = packagedMedia(track);
-  const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
-  if (!media || !navigator.onLine || document.hidden || connection?.saveData ||
-      connection?.effectiveType?.includes('2g') || warming >= 2 ||
-      (warm.get(media.manifest) ?? 0) > Date.now()) return;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string; type?: string } }).connection;
+  const source = media?.manifest ?? track.url;
+  if (!source?.startsWith('https://') || !navigator.onLine || document.hidden || connection?.saveData ||
+      connection?.type === 'cellular' || connection?.effectiveType?.includes('2g') || cancellation?.aborted || warming >= 2 ||
+      (warm.get(source) ?? 0) > Date.now()) return;
   while (warm.size >= 64) warm.delete(warm.keys().next().value!);
-  warm.set(media.manifest, Date.now() + 60_000);
+  warm.set(source, Date.now() + 60_000);
   warming++;
-  const signal = AbortSignal.timeout(12_000);
+  const timeout = AbortSignal.timeout(12_000);
+  const signal = cancellation ? AbortSignal.any([cancellation, timeout]) : timeout;
   void (async () => {
+    if (!media) {
+      const response = await fetch(source, { headers: { Range: 'bytes=0-131071' }, signal });
+      if (response.status !== 206) {
+        await response.body?.cancel();
+        throw new Error('Partial prefetch unavailable');
+      }
+      const reader = response.body?.getReader();
+      if (!reader) return;
+      let received = 0;
+      try {
+        while (received <= 131_072) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          received += value.byteLength;
+        }
+        await reader.cancel();
+      } finally { reader.releaseLock(); }
+      return;
+    }
     const master = await playlist(media.manifest, signal);
     const entry = master.split(/\r?\n/).find(line => line && !line.startsWith('#'));
     if (!entry) return;
@@ -87,5 +108,5 @@ export function warmTrack(track: Track, seconds = 8) {
       if (!response.ok) throw new Error('Segment unavailable');
       await response.arrayBuffer();
     }
-  })().catch(() => {}).finally(() => { warming--; });
+  })().catch(() => { if (cancellation?.aborted) warm.delete(source); }).finally(() => { warming--; });
 }

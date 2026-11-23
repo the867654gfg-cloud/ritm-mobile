@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 
@@ -30,6 +30,23 @@ function ffmpeg(args, cwd) {
   });
 }
 
+async function measureLoudness() {
+  return new Promise(resolve => {
+    execFile(process.env.RITM_FFMPEG || 'ffmpeg', [
+      '-hide_banner', '-nostdin', '-i', source, '-map', '0:a:0',
+      '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-',
+    ], { timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+      if (error) return resolve(undefined);
+      try {
+        const json = JSON.parse(stderr.slice(stderr.lastIndexOf('{'), stderr.lastIndexOf('}') + 1));
+        const integrated = Number(json.input_i);
+        const truePeak = Number(json.input_tp);
+        resolve(Number.isFinite(integrated) && Number.isFinite(truePeak) ? { integrated, truePeak } : undefined);
+      } catch { resolve(undefined); }
+    });
+  });
+}
+
 const staging = await mkdtemp(join(root, '.packaging-'));
 try {
   for (const profile of profiles) await mkdir(join(staging, profile));
@@ -51,6 +68,8 @@ try {
     await writeFile(master, playlist.replace('CODECS="flac"', 'CODECS="fLaC"'));
     await ffmpeg(['-i', source, '-map', '0:a:0', '-c:a', 'flac', 'lossless.flac'], staging);
   }
+  const loudness = await measureLoudness();
+  if (loudness) await writeFile(join(staging, 'loudness.json'), JSON.stringify(loudness));
   await rename(staging, destination);
 } finally {
   await rm(staging, { recursive: true, force: true });

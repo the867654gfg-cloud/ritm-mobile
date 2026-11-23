@@ -13,7 +13,7 @@ const allowedOrigin = new URL(base).origin;
 const db = createClient(base, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 const watch = process.argv.includes('--watch');
 const bucket = db.storage.from('music-storage');
-const types = { '.mp4': 'audio/mp4', '.m4s': 'audio/mp4', '.m4a': 'audio/mp4', '.m3u8': 'application/vnd.apple.mpegurl' };
+const types = { '.json': 'application/json', '.mp4': 'audio/mp4', '.m4s': 'audio/mp4', '.m4a': 'audio/mp4', '.m3u8': 'application/vnd.apple.mpegurl' };
 
 async function packageAudio(job, directory) {
   const source = new URL(job.source_url);

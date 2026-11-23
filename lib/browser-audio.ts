@@ -9,6 +9,7 @@ type Channel = {
   meanSquare: number;
   observed: number;
   lastSample: number;
+  calibrated?: boolean;
 };
 
 const amplitude = (db: number) => 10 ** (db / 20);
@@ -93,6 +94,7 @@ export class BrowserAudio {
   resetLevel(audio: HTMLAudioElement) {
     const channel = this.channels.get(audio);
     if (!channel) return;
+    channel.calibrated = false;
     channel.meanSquare = 0;
     channel.observed = 0;
     channel.lastSample = -Infinity;
@@ -101,10 +103,17 @@ export class BrowserAudio {
     channel.level.gain.setValueAtTime(1, now);
   }
 
+  applyTrackGain(audio: HTMLAudioElement, gain: number) {
+    const channel = this.channels.get(audio);
+    if (!channel) return;
+    channel.calibrated = true;
+    channel.level.gain.setTargetAtTime(gain, this.context.currentTime, 0.3);
+  }
+
   measureLevel(audio: HTMLAudioElement) {
     const channel = this.channels.get(audio);
     const now = this.context.currentTime;
-    if (!channel || audio.paused || audio.seeking || audio.readyState < 3 || now - channel.lastSample < 0.18) return;
+    if (!channel || channel.calibrated || audio.paused || audio.seeking || audio.readyState < 3 || now - channel.lastSample < 0.18) return;
     channel.lastSample = now;
     channel.meter.getFloatTimeDomainData(channel.samples);
     let sum = 0;

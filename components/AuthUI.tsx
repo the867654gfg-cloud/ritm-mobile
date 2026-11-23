@@ -91,7 +91,8 @@ export function PrimaryButton({
   }[variant];
   return (
     <Pressable
-      onPress={off ? undefined : onPress}
+      accessibilityRole="button" accessibilityState={{ busy: loading, disabled: !!off }} disabled={!!off}
+      onPress={onPress}
       style={{
         backgroundColor: styles.bg, borderColor: styles.border, borderWidth: 1.5, paddingVertical: 14, borderRadius: 12,
         alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, opacity: off ? 0.55 : 1, outlineStyle: 'none' as any,

@@ -1,3 +1,4 @@
+import { readAudioWithResume } from './resumable-audio';
 import type { DownloadProgress } from './download-status';
 
 const limit = 32 * 1024 * 1024;
@@ -53,39 +54,15 @@ export async function requireEncryptedOfflineWorker(worker: ServiceWorker) {
 export async function cacheEncryptedAudio(cache: Cache, key: string, url: string, typeOverride: string | undefined, signal?: AbortSignal, progress?: DownloadProgress) {
   const source = new URL(url);
   if (key === url) source.searchParams.set('ritm-download', '1');
-  const response = await fetch(source, { signal });
-  const type = response.headers.get('content-type') || '';
-  if (response.status !== 200 || !response.body ||
-      !/^(audio\/|video\/mp4|application\/octet-stream)/i.test(type)) {
-    throw new Error('Файл в этом качестве недоступен.');
-  }
-  const length = Number(response.headers.get('content-length'));
-  const total = length > 0 ? length : undefined;
-  const parts: Uint8Array<ArrayBuffer>[] = [];
-  const reader = response.body.getReader();
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) {
-        await reader.cancel();
-        throw new Error('Для скачивания выберите файл размером до 32 МБ.');
-      }
-      parts.push(value);
-      progress?.(size, total);
-    }
-  } finally { reader.releaseLock(); }
-  if (!size) throw new Error('Сервер вернул пустой аудиофайл.');
+  const { bytes, type } = await readAudioWithResume(source.href, limit, signal, progress);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: nonce, additionalData: new TextEncoder().encode(key) },
-    await offlineKey(), await new Blob(parts).arrayBuffer(),
+    await offlineKey(), bytes,
   );
   signal?.throwIfAborted();
   await cache.put(key, new Response(new Blob([nonce, ciphertext]), {
     headers: { 'Content-Type': typeOverride || type, 'X-Ritm-Encrypted': '1', 'X-Ritm-Download': crypto.randomUUID() },
   }));
-  return size;
+  return bytes.byteLength;
 }

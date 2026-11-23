@@ -1,3 +1,12 @@
+import { trackLoudnessGain } from '../../lib/track-loudness';
+import { COLORS } from '../../components/AuthUI';
+import { QueueOrderHandle } from '../../components/QueueOrderHandle';
+import { useRecommendationExclusions } from '../../lib/use-recommendation-exclusions';
+import { insertInQueue, moveQueueTrack } from '../../lib/playback-queue';
+import { Notice } from '../../components/AuthUI';
+import { searchQueries } from '../../lib/search-layout';
+import { usePlaybackInsights } from '../../lib/playback-insights';
+import { forYou } from '../../lib/track-recommendations';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { readableTrackText } from '../../lib/track-text';
 import { DragRow, moved } from '../../components/DragRow';
@@ -22,7 +31,7 @@ import { EqualizerPanel } from '../../components/EqualizerPanel';
 import { FullPlayer } from '../../components/FullPlayer';
 import { BrowserAudio, CROSSFADE_OPTIONS } from '../../lib/browser-audio';
 import Constants from 'expo-constants';
-import { offlineTracks, rememberOffline, removeOffline } from '../../lib/offline';
+import { clearOffline, offlineTracks, rememberOffline, removeOffline } from '../../lib/offline';
 import { useDownloadTransfers } from '../../lib/use-download-transfers';
 import { DownloadList } from '../../components/DownloadList';
 import { TrackProcessing, useTrackProcessing } from '../../components/TrackProcessing';
@@ -264,6 +273,7 @@ function CatalogScreen() {
   const [shared, setShared] = useState<{ title: string; tracks: Track[]; cover?: string; description?: string; author_id?: string } | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [offlineList, setOfflineList] = useState(offlineTracks);
+  const [confirmClearDownloads, setConfirmClearDownloads] = useState(false);
   const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' && !navigator.onLine);
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -327,6 +337,10 @@ function CatalogScreen() {
   }, [selectedTrackMenu]);
   const [selectedTrackDetails, setSelectedTrackDetails] = useState<Track | null>(null);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
+  const insights = usePlaybackInsights();
+  const [showQueue, setShowQueue] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
+  const [excludedRecommendations, toggleRecommendation] = useRecommendationExclusions(authUser?.id);
   const [selectedPlaylistModal, setSelectedPlaylistModal] = useState<{ id?: string; title: string; tracks: Track[]; cover?: string; description?: string; author_id?: string } | null>(null);
   
   const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
@@ -477,8 +491,10 @@ function CatalogScreen() {
   const playRequest = useRef(0);
   const playingRequest = useRef(0);
   const queuedNext = useRef<Track[]>([]);
+  const nextWarmup = useRef<AbortController | null>(null);
   const previousTracks = useRef<Track[]>([]);
   const [nextTracks, setNextTracks] = useState<Track[]>([]);
+  const queueRows = nextTracks;
   const playback = useRef<PlaybackProgress>();
   const playContext = useRef('Слушать');
   const volumeBarContainerRef = useRef<HTMLInputElement>(null);
@@ -611,12 +627,13 @@ function CatalogScreen() {
 
     try {
       const term = query.trim();
+    const variants = searchQueries(term);
       const genreNames = [genre, ...(GENRE_ALIASES[genre] ?? [])];
       const matchesGenre = (value: string) => genre === 'Все жанры' || genreNames.some(name => name.toLowerCase() === value.trim().toLowerCase());
       const match = '%' + term.replace(/[\\%_*]/g, char => '\\' + char) + '%';
       const localCatalog = async () => {
         const cached = searchCatalog.current;
-        if (term.length < 2 && cached && cached.expires > Date.now()) return cached.tracks;
+        if (cached && cached.expires > Date.now()) return cached.tracks;
         const tracks: Track[] = [];
         const pageSize = 250;
         for (let from = 0; ; from += pageSize) {
@@ -647,7 +664,7 @@ function CatalogScreen() {
       const score = (track: Track) => {
         let value = scores.get(track);
         if (value === undefined) {
-          value = searchScore(term, track.title, track.artist, track.album ?? '', track.version_kind);
+          value = Math.max(...variants.map((variant, index) => searchScore(variant, track.title, track.artist, track.album ?? '', track.version_kind) - index * 5));
           scores.set(track, value);
         }
         return value;
@@ -672,10 +689,11 @@ function CatalogScreen() {
         const audiusGenre = genre === 'Rap' || genre === 'Lofi' ? GENRE_ALIASES[genre][0] : genre;
         urlsToFetch = [`${host}/v1/tracks/trending?app_name=RITM_APP&limit=100&genre=${encodeURIComponent(audiusGenre)}`];
       } else if (searchTerm) {
-        const offsets = term.length >= 2 ? [0, 100, 200] : [0];
+        const offsets = term.length >= 2 ? [0, 100] : [0];
         urlsToFetch = offsets.map(offset => host + '/v1/tracks/search?' + new URLSearchParams({
           query: searchTerm, app_name: 'RITM_APP', limit: '100', offset: String(offset),
         }));
+        if (variants[1]) urlsToFetch.push(host + '/v1/tracks/search?app_name=RITM_APP&limit=50&query=' + encodeURIComponent(variants[1]));
       } else {
         urlsToFetch = [
           `${host}/v1/tracks/trending?app_name=RITM_APP&limit=100`,
@@ -719,7 +737,7 @@ function CatalogScreen() {
       const filtered = [...new Map(aggregated.map(t => [t.id, t])).values()].filter(t => !omitted.has(t.id));
       const ranked = term.length >= 2 ? filtered.map(track => ({ track, score: score(track) }))
         .filter(item => item.score > 0 || localMatches.has(item.track.id))
-        .sort((a, b) => Number(localMatches.has(b.track.id)) - Number(localMatches.has(a.track.id)) || b.score - a.score).map(item => item.track) : filtered;
+        .sort((a, b) => b.score - a.score || Number(localMatches.has(b.track.id)) - Number(localMatches.has(a.track.id))).map(item => item.track) : filtered;
       setGlobalSearchResults(ranked);
       if (filtered.length === 0 && failedSources > 0) setSearchError(true);
     } catch (err) {
@@ -804,6 +822,16 @@ function CatalogScreen() {
     cancelTransition();
   }, [crossfade, m.playbackSpeed]);
 
+  useEffect(() => {
+    if (!normalization || !activeAudio || !m.currentTrack) return;
+    const controller = new AbortController();
+    void trackLoudnessGain(m.currentTrack, controller.signal).then(gain => {
+      if (gain !== undefined && !controller.signal.aborted && activeAudio === webAudioRef.current) {
+        mixer.current?.applyTrackGain(activeAudio, gain);
+      }
+    });
+    return () => controller.abort();
+  }, [activeAudio, m.currentTrack, normalization]);
   useEffect(() => { cancelTransition(false); }, [isShuffle, isRepeat, nextTracks]);
 
   useEffect(() => {
@@ -867,11 +895,15 @@ function CatalogScreen() {
         if (audio !== webAudioRef.current) return;
         lastPlayedSeconds.current = audio.currentTime;
         countPlayback(audio);
+        if (!audio.paused && !audio.seeking) insights.position(audio.currentTime);
         if (normalization) mixer.current?.measureLevel(audio);
         if (!audio.paused && !audio.seeking && !isShuffle && !isRepeat && audio.duration > 0 &&
             audio.currentTime >= audio.duration * 0.75) {
           const next = queuedNext.current[0];
-          if (next) warmTrack(next, 12);
+          if (next && nextWarmup.current === null) {
+            nextWarmup.current = new AbortController();
+            warmTrack(next, 12, nextWarmup.current.signal);
+          }
         }
         if (pendingSeek.current !== undefined) return;
         checkTransition(audio);
@@ -913,8 +945,12 @@ function CatalogScreen() {
       const networkFailure = () => {
         const track = m.currentTrack;
         const request = playRequest.current;
-        if (!track || audio !== webAudioRef.current || playingRequest.current !== request || audio.error?.code !== 2) return;
-        playbackDiagnostics.current.failed++;
+        if (!track || audio !== webAudioRef.current || playingRequest.current !== request || !audio.error || audio.error.code === 1) return;
+        if (audio.error.code !== 2) {
+          insights.fail('аудиофайл или формат');
+          return;
+        }
+        insights.fail('сеть');
         const position = audio.currentTime || lastPlayedSeconds.current;
         const retry = () => {
           if (request !== playRequest.current) return;
@@ -933,11 +969,17 @@ function CatalogScreen() {
           setNotice('Соединение потеряно. Воспроизведение продолжится, когда сеть вернётся.');
         }
       };
+      const onBuffering = () => { if (!audio.seeking && !audio.paused && playingRequest.current === playRequest.current) insights.buffering(); };
+      const onPlaying = () => { if (playingRequest.current === playRequest.current) insights.playing(); };
+      audio.addEventListener('waiting', onBuffering);
+      audio.addEventListener('playing', onPlaying);
       audio.addEventListener('error', networkFailure);
       audio.addEventListener('seeking', resetClock);
       audio.addEventListener('playing', resetClock);
       audio.addEventListener('ended', ended);
       return () => {
+        audio.removeEventListener('waiting', onBuffering);
+        audio.removeEventListener('playing', onPlaying);
         audio.removeEventListener('error', networkFailure);
         audio.removeEventListener('timeupdate', updateTime);
         audio.removeEventListener('loadedmetadata', updateDuration);
@@ -970,12 +1012,18 @@ function CatalogScreen() {
     try { if (typeof m?.pauseTrack === 'function') m.pauseTrack(); } catch (e) {}
   };
 
-  const setUpcoming = (items: Track[]) => { queuedNext.current = items; setNextTracks(items); };
+  const setUpcoming = (items: Track[]) => {
+    if (items[0]?.id !== queuedNext.current[0]?.id) {
+      nextWarmup.current?.abort();
+      nextWarmup.current = null;
+    }
+    queuedNext.current = items;
+    setNextTracks(items);
+  };
   const visibilityRequest = useRef<AbortController>();
   const recovery = useRef<{ id: string; at: number }>();
   const reconnect = useRef<(() => void) | undefined>();
   const lastPlayedSeconds = useRef(0);
-  const playbackDiagnostics = useRef({ started: 0, failed: 0, totalStartMs: 0 });
   useEffect(() => {
     const resume = () => { const action = reconnect.current; reconnect.current = undefined; action?.(); };
     window.addEventListener('online', resume);
@@ -993,7 +1041,6 @@ function CatalogScreen() {
   const safePlayTrack = async (track: Track, queueList?: Track[], context?: string, startAt = 0, fromQueue = false, back = false) => {
     cancelPendingSeek();
     const request = ++playRequest.current;
-    const startedAt = performance.now();
     reconnect.current = undefined;
     lastPlayedSeconds.current = startAt;
     visibilityRequest.current?.abort();
@@ -1016,6 +1063,7 @@ function CatalogScreen() {
     if (!back && last && last.id !== track.id) previousTracks.current = [...previousTracks.current, last].slice(-60);
     playContext.current = context || 'Слушать';
     stopAudio();
+    insights.begin(track.id);
     playback.current = undefined;
     if (!fromQueue) {
       const list = queueList ?? globalSearchResults;
@@ -1039,7 +1087,7 @@ function CatalogScreen() {
     if (Platform.OS === 'web' && webAudioRef.current) {
       const audio = webAudioRef.current;
       if (request !== playRequest.current) return;
-      if (!rawUrl) { void m.pauseTrack(); setNotice('У трека нет доступного аудиофайла.'); return; }
+      if (!rawUrl) { insights.fail(); void m.pauseTrack(); setNotice('У трека нет доступного аудиофайла.'); return; }
       try {
         const adaptive = context !== 'Скачанные' && useTrackStream(audio, playableTrack, rawUrl);
         if (context === 'Скачанные') audio.src = rawUrl;
@@ -1063,13 +1111,12 @@ function CatalogScreen() {
         if (request !== playRequest.current) return;
         if (startAt > 0 && startAt < audio.duration) audio.currentTime = startAt;
         playingRequest.current = request;
-        playbackDiagnostics.current.started++;
-        playbackDiagnostics.current.totalStartMs += performance.now() - startedAt;
+        insights.playing();
         registerPlayback(track, audio, context);
       } catch {
         if (request === playRequest.current) {
           void m.pauseTrack();
-          playbackDiagnostics.current.failed++;
+          insights.fail();
           setNotice(playbackFailure(audio.error?.code));
         }
       }
@@ -1154,6 +1201,8 @@ function CatalogScreen() {
       mixer.current.setFade(outgoing, 1, 0, seconds);
       mixer.current.setFade(plan.audio, 0, 1, seconds);
       const track = takeFromQueue(index);
+      insights.begin(track.id);
+      insights.playing();
       setActiveAudio(plan.audio);
       setCurrentTime(plan.audio.currentTime);
       setTrackDuration(plan.audio.duration || track.duration || 0);
@@ -1167,7 +1216,9 @@ function CatalogScreen() {
   const handleNext = () => {
     const items = queuedNext.current;
     if (!items.length) return;
-    void safePlayTrack(takeFromQueue(nextIndex()), undefined, playContext.current, 0, true);
+    const next = takeFromQueue(nextIndex());
+    const context = playContext.current === 'Скачанные' && !offlineList.some(track => track.id === next.id) ? 'Слушать' : playContext.current;
+    void safePlayTrack(next, undefined, context, 0, true);
   };
 
   const handlePrevious = () => {
@@ -1466,26 +1517,29 @@ function CatalogScreen() {
     ? myMusicTracks.some(t => t.id === m.currentTrack.id) 
     : false;
 
+  const matchingSearchPlaylists = searchQuery.trim().length >= 2 ? userPlaylists.filter(playlist =>
+    searchQueries(searchQuery).some(term => searchScore(term, playlist.title) > 0)).slice(0, 8) : [];
   const catalogResults = useMemo(() => versionFilter ? globalSearchResults.filter(track => trackVersion(track.title, track.version_kind) === versionFilter) : globalSearchResults, [versionFilter, globalSearchResults]);
   const [visibleCount, setVisibleCount] = useState(50);
   useEffect(() => setVisibleCount(50), [searchQuery, selectedGenre, versionFilter]);
   const smartPlaylists = useMemo(() => [
-    { id: 'smart_trending', title: '🔥 Популярное', tracks: globalSearchResults.slice(0, 50), cover_url: globalSearchResults[0]?.cover_url || '' },
+    { id: 'smart_trending', title: '🔥 Популярное', tracks: [...globalSearchResults].sort((a, b) => (insights.engagement[b.id] ?? 0) - (insights.engagement[a.id] ?? 0)).slice(0, 50), cover_url: globalSearchResults[0]?.cover_url || '' },
     { id: 'smart_recent', title: '🕒 Недавно прослушиваемые', tracks: recentlyPlayed, cover_url: recentlyPlayed[0]?.cover_url || '' },
-    { id: 'smart_favorites', title: 'На основе избранного', tracks: globalSearchResults.filter(track => myMusicTracks.some(favorite => favorite.genre && favorite.genre === track.genre) && !myMusicTracks.some(favorite => favorite.id === track.id)).slice(0, 24), cover_url: '' },
+    { id: 'smart_favorites', title: 'Для тебя', tracks: forYou(globalSearchResults, myMusicTracks, insights.engagement, excludedRecommendations), cover_url: '' },
     { id: 'smart_week', title: 'Микс недели', tracks: [...globalSearchResults].sort((a, b) => {
       const week = Math.floor(Date.now() / 604800000);
       const rank = (id: string) => [...(week + id)].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261) >>> 0;
       return rank(a.id) - rank(b.id);
     }).slice(0, 20), cover_url: '' },
-  ], [globalSearchResults, recentlyPlayed, myMusicTracks]);
+  ], [globalSearchResults, recentlyPlayed, myMusicTracks, insights.engagement, excludedRecommendations]);
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || (!selectedPlaylistModal && activeTab !== 'main')) return;
-    const tracks = (selectedPlaylistModal?.tracks ?? catalogResults).filter(track => packagedMedia(track));
+    if (Platform.OS !== 'web' || typeof IntersectionObserver === 'undefined' || (!selectedPlaylistModal && activeTab !== 'main')) return;
+    const controller = new AbortController();
+    const tracks = (selectedPlaylistModal?.tracks ?? catalogResults).filter(track => track.url?.startsWith('https://'));
     if (selectedPlaylistModal) {
-      const timer = setTimeout(() => tracks.slice(0, 2).forEach(track => warmTrack(track)), 450);
-      return () => clearTimeout(timer);
+      const timer = setTimeout(() => tracks.slice(0, 2).forEach(track => warmTrack(track, 8, controller.signal)), 450);
+      return () => { clearTimeout(timer); controller.abort(); };
     }
     const targets = new Map<Element, Track>();
     for (const track of tracks) {
@@ -1496,23 +1550,24 @@ function CatalogScreen() {
       const nearby = entries.filter(entry => entry.isIntersecting).slice(0, 2);
       for (const entry of nearby) {
         const track = targets.get(entry.target);
-        if (track) warmTrack(track);
+        if (track) warmTrack(track, 8, controller.signal);
       }
     }, { rootMargin: '0px 0px 80px 0px' });
     targets.forEach((_, row) => observer.observe(row));
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); controller.abort(); };
   }, [activeTab, catalogResults, selectedPlaylistModal, visibleCount]);
   const processing = useTrackProcessing(authUser?.id, activeTab === 'uploads');
   const matchingPlaylists = userPlaylists.filter(playlist => playlist.title === playContext.current &&
     playlist.tracks.some(track => track.id === m.currentTrack?.id));
   const handoff = usePlaybackHandoff(authUser?.id, m.currentTrack, () => webAudioRef.current?.currentTime ?? 0, m.isPlaying,
-    matchingPlaylists.length === 1 ? matchingPlaylists[0].id : null);
+    matchingPlaylists.length === 1 ? matchingPlaylists[0].id : null, nextTracks);
   const handoffButton = handoff && !m.currentTrack && <PrimaryButton variant="soft"
     title={'Продолжить · ' + handoff.track_data.title + ' · ' + formatTime(handoff.seconds)}
     onPress={() => {
       const playlist = userPlaylists.find(item => item.id === handoff.playlist_id);
       const track = playlist?.tracks.find(item => item.id === handoff.track_data.id) || handoff.track_data;
-      void safePlayTrack(track, playlist?.tracks || [track], playlist?.title || 'Слушать', handoff.seconds);
+      const upcoming = handoff.track_data.upcoming;
+      void safePlayTrack(track, Array.isArray(upcoming) ? [track, ...upcoming] : playlist?.tracks || [track], playlist?.title || 'Слушать', handoff.seconds);
     }} />;
   const activeDuration = trackDuration || m?.currentTrack?.duration || 0;
 
@@ -1627,6 +1682,19 @@ function CatalogScreen() {
               </View>)}
             </> : <>
               {item('О треке', 'information-circle-outline', () => { close(); setSelectedTrackDetails(track); })}
+              {!bulk && item('Играть следующим', 'play-skip-forward-outline', () => {
+                if (isShuffle) setIsShuffle(false);
+                setUpcoming(insertInQueue(queuedNext.current, track, true));
+                close();
+              })}
+              {!bulk && item('В конец очереди', 'list-outline', () => {
+                setUpcoming(insertInQueue(queuedNext.current, track, false));
+                close();
+              })}
+              {!bulk && authUser && item(excludedRecommendations.includes(track.id) ? 'Вернуть в рекомендации' : 'Скрыть из рекомендаций', 'eye-off-outline', () => {
+                toggleRecommendation(track.id);
+                close();
+              })}
               {source === 'uploads' && track.user_id === authUser?.id && !bulk &&
                 item('Редактировать трек', 'create-outline', () => { close(); setEditingTrack(track); })}
               {item(bulk ? 'Добавить выбранные в плейлист' : 'Добавить в плейлист', 'add-outline', () => {
@@ -1865,11 +1933,23 @@ function CatalogScreen() {
           </View>}
           {activeTab === 'main' && (
             <RememberedScroll position={listPositions.current.main} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              {matchingSearchPlaylists.length > 0 && <View style={{ gap: 6, marginBottom: 12 }}>
+                <Text accessibilityRole="header" style={{ color: COLORS.text, fontWeight: '800' }}>Плейлисты</Text>
+                {matchingSearchPlaylists.map(playlist => <PrimaryButton key={playlist.id} title={playlist.title} variant="soft"
+                  onPress={() => setSelectedPlaylistModal(playlist)} />)}
+              </View>}
               {handoffButton}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                <PrimaryButton variant="soft" title="Очередь" onPress={() => setShowQueue(true)} />
+                <PrimaryButton variant="soft" title="Диагностика звука" onPress={() => setShowInsights(true)} />
+              </View>
               <DownloadList tracks={offlineList} transfers={transfers.entries} query={searchQuery}
                 play={track => void safePlayTrack(track, offlineList, 'Скачанные')}
                 remove={track => void removeOffline(track).then(() => setOfflineList(offlineTracks())).catch(() => setNotice('Не удалось удалить файл.'))}
                 cancel={transfers.cancel} retry={item => transfers.run(item.track, item.quality)} />
+              {offlineList.length > 0 && !transfers.entries.some(item => !item.error) &&
+                <PrimaryButton variant="soft" title="Очистить скачанную музыку" onPress={() => setConfirmClearDownloads(true)} />}
+
 
               <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 }}>
                 <TextInput
@@ -1990,7 +2070,8 @@ function CatalogScreen() {
                     nativeID={'ritm-prefetch-' + item.id}
                     style={[trackRow, { backgroundColor: isSelected ? 'rgba(250,35,59,0.10)' : 'rgba(255,255,255,0.55)' }]}
                   >
-                    <Pressable onHoverIn={() => warmTrack(item)} onPress={() => void safePlayTrack(item, catalogResults, 'Слушать')} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
+                    <Pressable onHoverIn={() => warmTrack(item)} onPress={() => void safePlayTrack(item, catalogResults, 'Слушать')} style={{
+                      ...(Platform.OS === 'web' ? { contentVisibility: 'auto', containIntrinsicSize: 'auto 64px' } as any : {}), flexDirection: 'row', alignItems: 'center', flex: 1, outlineStyle: 'none' as any }}>
                       <TrackCoverImage track={item} style={trackArtwork} />
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '700', color: isSelected ? '#fa233b' : '#000000' }}>{item.title}</Text>
@@ -2589,6 +2670,40 @@ function CatalogScreen() {
       </Modal>
 
       {!selectedPlaylistModal && renderTrackMenu()}
+      {confirmClearDownloads && <CollectionPanel title="Очистить скачанную музыку" close={() => setConfirmClearDownloads(false)}>
+        <Notice kind="info" text="Скачанные файлы будут удалены с этого устройства." />
+        <PrimaryButton title="Удалить скачанные файлы" onPress={() => {
+          setConfirmClearDownloads(false);
+          void clearOffline().then(() => setOfflineList([])).catch(() => setNotice('Не удалось очистить скачанные файлы.'));
+        }} />
+      </CollectionPanel>}
+      {showQueue && <CollectionPanel title="Очередь воспроизведения" close={() => setShowQueue(false)}>
+        {!queueRows.length && <Notice kind="info" text="В очереди пока нет треков." />}
+        {queueRows.map((track, index) => <View key={track.id} style={{ flexDirection: 'row', alignItems: 'center', height: 48, gap: 4 }}>
+          <QueueOrderHandle title={track.title} index={index} count={queueRows.length}
+            move={(from, to) => setUpcoming(moveQueueTrack(queueRows, from, to))} />
+          <Pressable accessibilityRole="button" accessibilityLabel={'Слушать ' + track.title}
+            style={{ flex: 1, minHeight: 44, justifyContent: 'center' }}
+            onPress={() => { setShowQueue(false); void safePlayTrack(takeFromQueue(index), undefined, playContext.current, 0, true); }}>
+            <Text numberOfLines={1} style={{ color: COLORS.text }}>{track.title}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={'Поднять ' + track.title} disabled={index === 0}
+            onPress={() => setUpcoming(moveQueueTrack(queueRows, index, index - 1))} style={{ padding: 8 }}>
+            <Ionicons name="arrow-up" size={20} color={index ? '#d53259' : '#aaa'} />
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={'Опустить ' + track.title} disabled={index === queueRows.length - 1}
+            onPress={() => setUpcoming(moveQueueTrack(queueRows, index, index + 1))} style={{ padding: 8 }}>
+            <Ionicons name="arrow-down" size={20} color={index < queueRows.length - 1 ? '#d53259' : '#aaa'} />
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={'Убрать ' + track.title}
+            onPress={() => setUpcoming(queueRows.filter(item => item.id !== track.id))} style={{ padding: 8 }}>
+            <Ionicons name="close" size={20} color="#d53259" />
+          </Pressable>
+        </View>)}
+      </CollectionPanel>}
+      {showInsights && <CollectionPanel title="Диагностика звука" close={() => setShowInsights(false)}>
+        {insights.summary.map(line => <Notice key={line} kind="info" text={line} />)}
+      </CollectionPanel>}
       {downloadQualityTrack && <CollectionPanel title="Качество скачивания" close={() => setDownloadQualityTrack(null)}>
         {DOWNLOAD_QUALITIES.map(quality => <PrimaryButton key={quality} variant="soft" title={quality + ' кбит/с'}
           onPress={() => downloadTrack(downloadQualityTrack, quality)} />)}
@@ -2615,14 +2730,6 @@ function CatalogScreen() {
         setSelectedTrackDetails(updated);
         setNotice('Изменения сохранены.');
       }} />}
-      {showModeration && canModerate && <View accessibilityLabel="Диагностика текущего сеанса"
-        style={{ position: 'absolute', bottom: 118, right: 16, padding: 12, zIndex: 100, backgroundColor: '#fff', borderRadius: 8 }}>
-        <Text style={{ color: '#222' }}>
-          {'Запуски: ' + playbackDiagnostics.current.started + ' · сбои: ' + playbackDiagnostics.current.failed +
-            (playbackDiagnostics.current.started ? ' · старт в среднем ' +
-              Math.round(playbackDiagnostics.current.totalStartMs / playbackDiagnostics.current.started) + ' мс' : '')}
-        </Text>
-      </View>}
       {showModeration && canModerate && <ModerationPanel close={() => setShowModeration(false)} onVisibility={(id, hide) => {
         setHiddenTrackIds(previous => hide ? [...new Set([...previous, id])] : previous.filter(item => item !== id));
         if (hide) {
