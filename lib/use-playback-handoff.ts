@@ -3,13 +3,13 @@ import { AppState, Platform } from 'react-native';
 import type { Track } from './music-data';
 import { supabase } from './supabase';
 
-type Point = { track_data: Track & { upcoming?: Track[] }; seconds: number; playlist_id: string | null };
+type Point = { track_data: Track; seconds: number; playlist_id: string | null };
 const missingSchema = new Set(['PGRST205', '42P01']);
 
-export function usePlaybackHandoff(user: string | undefined, track: Track | null, seconds: number | (() => number), playing: boolean, playlist: string | null, upcoming: Track[]) {
+export function usePlaybackHandoff(user: string | undefined, track: Track | null, seconds: number | (() => number), playing: boolean, playlist: string | null) {
   const [remote, setRemote] = useState<{ owner: string; point: Point } | null>(null);
-  const screen = useRef({ track, seconds, playing, playlist, upcoming });
-  screen.current = { track, seconds, playing, playlist, upcoming };
+  const screen = useRef({ track, seconds, playing, playlist });
+  screen.current = { track, seconds, playing, playlist };
   const disabled = useRef(false);
   useEffect(() => {
     const client = supabase;
@@ -49,18 +49,8 @@ export function usePlaybackHandoff(user: string | undefined, track: Track | null
       if (disabled.current || current.track?.id !== track.id || !Number.isFinite(seconds) || seconds < 3) return;
       const position = Math.min(86400, Math.floor(seconds));
       if (!current.track.url?.startsWith('https://')) return;
-      const upcoming: Track[] = [];
       const { id, title, artist, genre, duration, url, cover_url, user_id, raw_id } = current.track;
-      const trackData = { id, title, artist, genre, duration, url, cover_url, user_id, raw_id, upcoming };
-      for (const candidate of current.upcoming.slice(0, 30)) {
-        if (!candidate.url?.startsWith('https://') || candidate.id === id) continue;
-        upcoming.push({
-          id: candidate.id, title: candidate.title, artist: candidate.artist, duration: candidate.duration,
-          genre: candidate.genre, url: candidate.url, cover_url: candidate.cover_url, raw_id: candidate.raw_id,
-          user_id: candidate.user_id,
-        });
-        if (JSON.stringify(trackData).length > 7_000) { upcoming.pop(); break; }
-      }
+      const trackData = { id, title, artist, genre, duration, url, cover_url, user_id, raw_id };
       const signature = JSON.stringify([position, current.playlist, trackData]);
       if (signature === lastSignature || JSON.stringify(trackData).length > 7_000) return;
       if (writing) { pending = true; return; }
